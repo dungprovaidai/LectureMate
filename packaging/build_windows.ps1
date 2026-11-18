@@ -45,9 +45,15 @@ $leak = Get-ChildItem -Recurse $App -Include ".env","*.env" -ErrorAction Silentl
 if ($leak) { throw "Phát hiện file .env trong bản build: $leak" }
 
 Write-Host "== 6. Smoke test exe ==" -ForegroundColor Cyan
-& (Join-Path $App "LectureMate.exe") --smoke
-if ($LASTEXITCODE -ne 0) { throw "Smoke test exe thất bại (mã $LASTEXITCODE)." }
-Start-Sleep -Seconds 4
+$SmokeOut = Join-Path $env:TEMP "LectureMate-smoke-out.txt"
+$SmokeErr = Join-Path $env:TEMP "LectureMate-smoke-err.txt"
+$Smoke = Start-Process -FilePath (Join-Path $App "LectureMate.exe") -ArgumentList "--smoke" `
+    -PassThru -Wait -RedirectStandardOutput $SmokeOut -RedirectStandardError $SmokeErr
+if ($Smoke.ExitCode -ne 0) {
+    $details = Get-Content $SmokeErr -Raw -ErrorAction SilentlyContinue
+    throw "Smoke test exe thất bại (mã $($Smoke.ExitCode)): $details"
+}
+Get-Content $SmokeOut -ErrorAction SilentlyContinue
 
 $zip = Join-Path $Root "LectureMate-build\LectureMate-portable-win64.zip"
 if (Test-Path $zip) { Remove-Item $zip }

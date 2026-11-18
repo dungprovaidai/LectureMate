@@ -6,7 +6,7 @@
 3. Lần đầu: đọc và đồng ý màn hình quyền riêng tư.
 
 ## Thiết lập lần đầu
-1. **Nguồn âm thanh:** Microphone (học tại lớp) hoặc System Audio (lớp online, WASAPI loopback). Bấm **Thử 5 giây** để xem thanh mức âm.
+1. **Nguồn âm thanh:** Microphone (học tại lớp) hoặc System Audio (lớp online, WASAPI loopback). Với Microphone, lựa chọn mặc định ưu tiên micro vật lý thay vì Stereo Mix. Bấm **Thử 5 giây** khi đang nói để xem thanh mức âm.
    - Nếu micro không hoạt động: *Settings → Privacy & security → Microphone* → bật cho ứng dụng desktop.
 2. **Model ASR:** lần đầu bắt đầu buổi học, model Faster-Whisper được tải về `%LOCALAPPDATA%\LectureMate\models` (cần mạng, `base` ~150 MB). Có thể đặt sẵn model trong thư mục `models` cạnh exe nếu build với `-WithModel`.
 3. **API dịch:** *Thiết lập → API dịch* → nhập Base URL, Model, API key → **Thử kết nối**. Key được lưu trong Windows Credential Manager (*Control Panel → Credential Manager → Windows Credentials → LectureMate*).

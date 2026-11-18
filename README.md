@@ -5,6 +5,7 @@
 
 Phụ đề đặt bản dịch tiếng Việt lớn phía trên, nguyên văn nhỏ phía dưới; ngôn ngữ tự nhận diện. Nhãn
 “Người nói 1/2…” là ước lượng nhẹ từ âm thanh, không xác minh danh tính và có thể nhầm.
+Khi Windows đặt Stereo Mix làm đầu vào mặc định, LectureMate ưu tiên micro vật lý; có thể chọn thiết bị cụ thể trên thanh nguồn âm thanh.
 
 ```
 Micro / WASAPI loopback → AudioCaptureWorker ─┬─→ WAV (local)

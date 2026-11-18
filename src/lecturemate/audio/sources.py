@@ -53,10 +53,7 @@ def list_devices() -> list[DeviceInfo]:
     except Exception:
         return []
     out: list[DeviceInfo] = []
-    try:
-        default_mic = sc.default_microphone()
-    except Exception:
-        default_mic = None
+    default_mic = _preferred_microphone(sc)
     try:
         default_spk = sc.default_speaker()
     except Exception:
@@ -72,6 +69,33 @@ def list_devices() -> list[DeviceInfo]:
     except Exception as exc:  # backend lỗi
         raise DeviceError(f"Không liệt kê được thiết bị: {exc}") from exc
     return out
+
+
+_MONITOR_MIC_NAMES = ("stereo mix", "what u hear", "wave out", "loopback", "monitor of")
+
+
+def _is_monitor_microphone(microphone) -> bool:
+    name = str(getattr(microphone, "name", "")).casefold()
+    return bool(getattr(microphone, "isloopback", False)) or any(token in name for token in _MONITOR_MIC_NAMES)
+
+
+def _preferred_microphone(soundcard_module):
+    """Prefer a real mic when Windows' default capture endpoint is Stereo Mix."""
+    try:
+        default = soundcard_module.default_microphone()
+    except Exception:
+        default = None
+    if default is not None and not _is_monitor_microphone(default):
+        return default
+
+    try:
+        microphones = soundcard_module.all_microphones(include_loopback=False)
+    except Exception:
+        microphones = []
+    physical = [mic for mic in microphones if not _is_monitor_microphone(mic)]
+    if physical:
+        return next((mic for mic in physical if "microphone array" in mic.name.casefold()), physical[0])
+    return default
 
 
 def _com_init_this_thread() -> None:
@@ -112,7 +136,10 @@ class SoundCardSource:
             return sc.get_microphone(str(spk.name), include_loopback=True)
         if self.device_id:
             return sc.get_microphone(self.device_id)
-        return sc.default_microphone()
+        microphone = _preferred_microphone(sc)
+        if microphone is None:
+            raise DeviceError("Windows chưa có microphone đầu vào khả dụng")
+        return microphone
 
     def open(self) -> None:
         _com_init_this_thread()

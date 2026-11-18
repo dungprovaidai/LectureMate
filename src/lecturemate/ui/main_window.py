@@ -300,7 +300,8 @@ class MainWindow(QMainWindow):
     def _reload_devices(self) -> None:
         kind = self.page.source.currentData()
         self.page.device.clear()
-        self.page.device.addItem("Mặc định", "")
+        default_label = "Mặc định (ưu tiên micro thật)" if kind == "microphone" else "Mặc định"
+        self.page.device.addItem(default_label, "")
         try:
             for d in list_devices():
                 if d.kind == kind:
