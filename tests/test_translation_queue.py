@@ -45,6 +45,41 @@ def test_translates_all_with_max_two_in_flight(repo):
     assert len(p.calls) == 8
 
 
+def test_preview_translation_is_transient_and_uses_detected_language(repo):
+    sid = repo.create_session("t", "microphone")
+    provider = MockProvider(lambda _messages: "bonjour")
+    q, results = make_q(repo, provider)
+
+    assert q.submit_preview("live-segment", sid, "bonjour à tous", "fr", revision=0)
+
+    assert wait_until(lambda: len(results) == 1)
+    q.stop()
+    result = results[0]
+    assert result.text_vi == "bonjour"
+    assert result.extra == {"preview": True, "revision": 0}
+    assert "<ngon_ngu_goc>fr</ngon_ngu_goc>" in provider.calls[0][-1]["content"]
+    assert repo.get_segment("live-segment") is None
+
+
+def test_preview_hypotheses_coalesce_and_final_jobs_have_priority(repo):
+    sid, events = setup(repo, 1)
+    q = TranslationQueue(repo, lambda: MockProvider(lambda _messages: "ok"), max_in_flight=2)
+    ev = events[0]
+
+    assert q.submit_preview("live-segment", sid, "first idea", "en", revision=0)
+    assert q.submit_preview("live-segment", sid, "latest idea", "en", revision=1)
+    assert q._previews["live-segment"].preview_text == "latest idea"
+    q.submit(ev.segment_id, sid)
+
+    final_job = q._next_job()
+    assert final_job.segment_id == ev.segment_id
+    q._done(final_job)
+    preview_job = q._next_job()
+    assert preview_job.preview_text == "latest idea"
+    q._done(preview_job)
+    q.stop(drain_s=0)
+
+
 def test_no_duplicate_send_on_double_submit_and_retry(repo):
     sid, evs = setup(repo, 1)
     p = MockProvider(lambda m: "ok", latency_s=0.05)

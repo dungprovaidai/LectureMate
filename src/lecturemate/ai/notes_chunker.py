@@ -28,7 +28,12 @@ def chunk_segments(segments, max_chars: int = 6000, overlap: int = 2) -> list[Ch
     segs = list(segments)
     if overlap < 0:
         raise ValueError("overlap >= 0")
-    lines = [(s, f"[{format_ts(s.start_ms)}] {s.en_text.strip()}") for s in segs]
+    lines = []
+    for s in segs:
+        labels = [getattr(s, "language", "und") or "und"]
+        if getattr(s, "speaker_id", None):
+            labels.append(f"Người nói {s.speaker_id}")
+        lines.append((s, f"[{format_ts(s.start_ms)}] [{', '.join(labels)}] {s.en_text.strip()}"))
     lines = [(s, ln if len(ln) <= max_chars else ln[:max_chars - 1] + "…") for s, ln in lines]
     chunks: list[Chunk] = []
     i = 0

@@ -11,7 +11,9 @@
 2. **Model ASR:** lần đầu bắt đầu buổi học, model Faster-Whisper được tải về `%LOCALAPPDATA%\LectureMate\models` (cần mạng, `base` ~150 MB). Có thể đặt sẵn model trong thư mục `models` cạnh exe nếu build với `-WithModel`.
 3. **API dịch:** *Thiết lập → API dịch* → nhập Base URL, Model, API key → **Thử kết nối**. Key được lưu trong Windows Credential Manager (*Control Panel → Credential Manager → Windows Credentials → LectureMate*).
    - Chưa có key vẫn ghi âm và có phụ đề tiếng Anh; bấm *Dịch lại các đoạn còn thiếu* sau khi có key.
-4. **Thuật ngữ:** *Thiết lập → Thuật ngữ* → thêm môn → nhập bảng EN | VI (hoặc *Nhập CSV*).
+4. **Nhịp dịch và tóm tắt:** *Thiết lập → Âm thanh & ASR → Nhịp dịch* chọn **Nhanh** (nhiều lượt API hơn)
+   hoặc **Tự nhiên**. Bật/tắt tự tạo tóm tắt khi kết thúc trong *Thiết lập → API dịch*.
+5. **Thuật ngữ:** *Thiết lập → Thuật ngữ* → thêm môn → nhập bảng EN | VI (hoặc *Nhập CSV*).
 
 ## Phím tắt
 | Phím | Việc |

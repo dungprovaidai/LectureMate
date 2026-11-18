@@ -72,7 +72,7 @@ class TranscriberCache:
             return None
         from ..asr.transcriber import make_transcriber
 
-        key = (self.cfg.asr_model, self.cfg.asr_device, self.cfg.asr_compute_type)
+        key = (self.cfg.asr_model, self.cfg.asr_device, self.cfg.asr_compute_type, self.cfg.language)
         if key != self._key:
             self._tr = make_transcriber(self.cfg)
             self._key = key
@@ -142,11 +142,9 @@ class LivePage(QWidget):
         lay.addWidget(self.banner)
 
         heads = QHBoxLayout()
-        a, b = QLabel("Original (EN)"), QLabel("Tiếng Việt")
+        a = QLabel("Bản dịch tiếng Việt ở trên · nguyên văn nhỏ bên dưới · nhãn giọng/ngôn ngữ là ước lượng")
         a.setObjectName("muted")
-        b.setObjectName("muted")
         heads.addWidget(a, 1)
-        heads.addWidget(b, 1)
         lay.addLayout(heads)
         self.subs = SubtitleView()
         lay.addWidget(self.subs, 1)
@@ -212,6 +210,7 @@ class MainWindow(QMainWindow):
         self.sv = AppServices(cfg, repo, self.provider_getter, self.bridge.callbacks())
         self.live: LiveSession | None = None
         self._recent_totals: deque[int] = deque(maxlen=200)
+        self._pending_translations: dict[str, TranslationResult] = {}
 
         central = QWidget()
         central.setObjectName("page")
@@ -415,6 +414,8 @@ class MainWindow(QMainWindow):
                     msg += f" {missing} đoạn chưa dịch — có thể dịch lại trong trang chi tiết."
                 self.page.banner.show_message(msg, "info", 10000)
                 self.open_detail(sid)
+                if self.cfg.auto_summary_on_finish:
+                    self.detail.generate_summary_after_session()
 
         run_async(lambda _: live.stop(), done, lambda m: self.page.banner.show_message("Lỗi khi dừng: " + m))
 
@@ -467,10 +468,23 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- events
     def _on_transcript(self, ev: TranscriptEvent) -> None:
+        if ev.type == "discard":
+            self._pending_translations.pop(ev.segment_id, None)
         if self.live and ev.session_id == self.live.session_id:
             self.page.subs.apply_event(ev)
+            pending = self._pending_translations.pop(ev.segment_id, None)
+            if pending:
+                self.page.subs.apply_translation(ev.segment_id, pending)
 
     def _on_translation(self, segment_id: str, res: TranslationResult) -> None:
+        if segment_id not in self.page.subs.rows and self.live:
+            existing = self._pending_translations.get(segment_id)
+            existing_is_final = existing is not None and not existing.extra.get("preview")
+            incoming_is_final = not res.extra.get("preview")
+            newer_preview = (existing is not None and existing.extra.get("preview") and res.extra.get("preview")
+                             and int(res.extra.get("revision", -1)) >= int(existing.extra.get("revision", -1)))
+            if not existing_is_final and (incoming_is_final or existing is None or newer_preview):
+                self._pending_translations[segment_id] = res
         self.page.subs.apply_translation(segment_id, res)
         if self.stack.currentWidget() is self.detail:
             self.detail.on_translation(segment_id, res)

@@ -12,8 +12,11 @@ Set-Location $Root
 Write-Host "== 1. Môi trường ảo build ==" -ForegroundColor Cyan
 if (-not (Test-Path ".venv-build")) { Invoke-Expression "$Python -m venv .venv-build" }
 & .\.venv-build\Scripts\python.exe -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "Cài pip thất bại." }
 & .\.venv-build\Scripts\python.exe -m pip install -r requirements-dev.txt
+if ($LASTEXITCODE -ne 0) { throw "Cài dependencies build thất bại." }
 & .\.venv-build\Scripts\python.exe -m pip install -e .
+if ($LASTEXITCODE -ne 0) { throw "Cài LectureMate vào môi trường build thất bại." }
 
 Write-Host "== 2. Chạy test trước khi đóng gói ==" -ForegroundColor Cyan
 $env:QT_QPA_PLATFORM = "offscreen"
@@ -23,6 +26,7 @@ Remove-Item Env:QT_QPA_PLATFORM
 
 Write-Host "== 3. PyInstaller ==" -ForegroundColor Cyan
 & .\.venv-build\Scripts\pyinstaller.exe --noconfirm --clean --distpath LectureMate-build --workpath build packaging\lecturemate.spec
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller thất bại." }
 
 $App = Join-Path $Root "LectureMate-build\LectureMate"
 Copy-Item packaging\README-Windows.md $App
@@ -33,6 +37,7 @@ if ($WithModel) {
     Write-Host "== 4. Tải sẵn model ASR '$WithModel' ==" -ForegroundColor Cyan
     $code = "from faster_whisper import WhisperModel; WhisperModel('$WithModel', device='cpu', compute_type='int8', download_root=r'$App\models')"
     & .\.venv-build\Scripts\python.exe -c $code
+    if ($LASTEXITCODE -ne 0) { throw "Không tải được model ASR '$WithModel'." }
 }
 
 Write-Host "== 5. Kiểm tra: không đóng gói API key / .env ==" -ForegroundColor Cyan
@@ -41,6 +46,7 @@ if ($leak) { throw "Phát hiện file .env trong bản build: $leak" }
 
 Write-Host "== 6. Smoke test exe ==" -ForegroundColor Cyan
 & (Join-Path $App "LectureMate.exe") --smoke
+if ($LASTEXITCODE -ne 0) { throw "Smoke test exe thất bại (mã $LASTEXITCODE)." }
 Start-Sleep -Seconds 4
 
 $zip = Join-Path $Root "LectureMate-build\LectureMate-portable-win64.zip"

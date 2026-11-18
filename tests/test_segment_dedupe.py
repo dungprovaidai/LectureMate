@@ -137,6 +137,24 @@ def test_strip_overlap():
     assert strip_overlap("hello", "world") == "world"
 
 
+def test_lightweight_speaker_tracker_separates_obviously_different_pitch():
+    from lecturemate.asr.speaker import SpeakerTracker
+
+    def voice(pitch, seed):
+        rng = np.random.default_rng(seed)
+        t = np.arange(2 * SR) / SR
+        audio = (0.3 * np.sin(2 * np.pi * pitch * t)
+                 + 0.05 * np.sin(2 * np.pi * pitch * 2.2 * t)
+                 + rng.normal(0, 0.01, len(t)))
+        return audio.astype(np.float32)
+
+    tracker = SpeakerTracker()
+    ids = [tracker.assign(voice(pitch, pitch)) for pitch in (120, 125, 120, 220, 215, 122)]
+
+    assert ids[0] == ids[1] == ids[2] == ids[5]
+    assert ids[3] == ids[4] and ids[3] != ids[0]
+
+
 def test_committer_continues_sequence_after_restart(repo):
     sid = repo.create_session("t", "microphone")
     for i in range(3):

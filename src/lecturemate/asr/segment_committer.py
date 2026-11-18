@@ -5,7 +5,7 @@ import re
 import threading
 from dataclasses import replace
 
-from ..domain.models import TranscriptEvent
+from ..domain.models import TranscriptEvent, is_vietnamese
 
 # Câu "ảo giác" quen thuộc của Whisper trên đoạn gần như im lặng
 HALLUCINATIONS = {
@@ -68,7 +68,7 @@ class SegmentCommitter:
             final = replace(ev, type="final", text_en=text, sequence_number=self.next_seq,
                             start_ms=start, end_ms=max(ev.end_ms, start + 1))
             if self.repo is not None:
-                if not self.repo.commit_final(final, translate=self.translate):
+                if not self.repo.commit_final(final, translate=self.translate and not is_vietnamese(final.language)):
                     self.dropped += 1
                     return None
             self.next_seq += 1

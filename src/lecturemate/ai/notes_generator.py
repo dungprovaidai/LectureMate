@@ -10,10 +10,11 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from ..domain.models import format_ts
 from .citations import validate_citations
-from .llm_provider import LLMError, LLMProvider
+from .llm_provider import LLMError, LLMProvider, LLMResponse
 from .notes_chunker import chunk_segments
 from .translator import load_prompt
 
@@ -27,6 +28,7 @@ class NotesResult:
     segment_ids: list[str]
     invalid_citations: list[str] = field(default_factory=list)
     failed_chunks: list[int] = field(default_factory=list)
+    budget_limited: bool = False
 
     @property
     def complete(self) -> bool:
@@ -35,13 +37,25 @@ class NotesResult:
 
 class NotesGenerator:
     def __init__(self, provider: LLMProvider, cache_dir: Path | None = None, max_chars: int = 6000,
-                 overlap: int = 2, max_tokens: int = 1500, timeout_s: float = 60.0):
+                 overlap: int = 2, max_tokens: int = 1500, timeout_s: float = 60.0,
+                 budget_check: Callable[[], bool] | None = None,
+                 on_usage: Callable[[LLMResponse], None] | None = None):
         self.provider = provider
         self.cache_dir = cache_dir
         self.max_chars = max_chars
         self.overlap = overlap
         self.max_tokens = max_tokens
         self.timeout_s = timeout_s
+        self.budget_check = budget_check
+        self.on_usage = on_usage
+
+    def _complete(self, messages: list[dict], max_tokens: int) -> LLMResponse:
+        if self.budget_check and not self.budget_check():
+            raise LLMError("budget", "Đã chạm giới hạn chi phí tháng")
+        result = self.provider.complete(messages, max_tokens=max_tokens, timeout_s=self.timeout_s)
+        if self.on_usage:
+            self.on_usage(result)
+        return result
 
     def _cache_file(self, session_id: str) -> Path | None:
         if not self.cache_dir:
@@ -65,6 +79,7 @@ class NotesGenerator:
         parts: list[str] = []
         failed: list[int] = []
         bad_all: list[str] = []
+        budget_limited = False
         model = getattr(self.provider, "model", "")
         for ch in chunks:
             key = hashlib.sha1(ch.text.encode("utf-8")).hexdigest()
@@ -74,10 +89,11 @@ class NotesGenerator:
             msgs = [{"role": "system", "content": system},
                     {"role": "user", "content": f"Bài giảng: {title}\nPhần {ch.index + 1}/{len(chunks)}\n\n{ch.text}"}]
             try:
-                resp = self.provider.complete(msgs, max_tokens=self.max_tokens, timeout_s=self.timeout_s)
+                resp = self._complete(msgs, self.max_tokens)
             except LLMError as e:
                 log.warning("Chunk %d lỗi: %s", ch.index, e.code)
                 failed.append(ch.index)
+                budget_limited |= e.code == "budget"
                 continue
             model = resp.model or model
             text, bad = validate_citations(resp.text.strip(), ch.timestamps)
@@ -92,19 +108,22 @@ class NotesGenerator:
             msgs = [{"role": "system", "content": load_prompt("notes_merge.txt")},
                     {"role": "user", "content": "\n\n---\n\n".join(parts)}]
             try:
-                resp = self.provider.complete(msgs, max_tokens=self.max_tokens * 2, timeout_s=self.timeout_s)
+                resp = self._complete(msgs, self.max_tokens * 2)
                 body, bad = validate_citations(resp.text.strip(), allowed)
                 bad_all += bad
-            except LLMError:
+            except LLMError as exc:
+                budget_limited |= exc.code == "budget"
                 body = "\n\n".join(parts)  # gộp thô vẫn hơn mất kết quả
         else:
             body = "\n\n".join(parts)
         header = f"# Ghi chú: {title}\n\n" if title else ""
         if failed:
-            body += (f"\n\n> ⚠️ {len(failed)} phần chưa tạo được ghi chú (lỗi API). "
+            body += (f"\n\n> ⚠️ {len(failed)} phần chưa tạo được ghi chú (lỗi API hoặc giới hạn chi phí). "
                      "Bấm “Tạo lại” để chỉ chạy lại các phần đó.")
+        if budget_limited:
+            body += "\n\n> Đã dừng tạo nội dung mới do chạm giới hạn chi phí đã đặt."
         if bad_all:
             body += f"\n\n> ⚠️ Đã loại {len(bad_all)} mốc thời gian không có trong transcript (hiển thị [mốc?])."
         if cache_path and not failed and cache_path.exists():
             cache_path.unlink()
-        return NotesResult(header + body, model, [s.id for s in segs], bad_all, failed)
+        return NotesResult(header + body, model, [s.id for s in segs], bad_all, failed, budget_limited)

@@ -177,7 +177,8 @@ def test_crash_recovery(tmp_path):
     sid = ls.start("Crash")
     assert wait(lambda: len(repo.list_segments(sid)) >= 5)
     committed = {s.id for s in repo.list_segments(sid)}
-    ls.audio._stop_evt.set()  # "kill": dừng nguồn, không chốt phiên
+    ls.audio.on_end = None  # mô phỏng process chết: không chạy callback tự kết thúc phiên
+    ls.audio._stop_evt.set()
     ls.asr.abort()
     sv.tq.stop(0)
     # ứng dụng mới khởi động

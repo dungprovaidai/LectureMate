@@ -14,13 +14,19 @@ def load_prompt(name: str) -> str:
     return (resources.files("lecturemate.ai") / "prompts" / name).read_text(encoding="utf-8")
 
 
-def build_messages(req: TranslationRequest, max_context_chars: int = 400) -> list[dict]:
+def build_messages(req: TranslationRequest, max_context_chars: int = 400, *, preview: bool = False) -> list[dict]:
+    if preview:
+        system = ("Dịch phần lời nói đang dở trong <cau_can_dich> sang tiếng Việt. "
+                  "Giữ nguyên nếu đã là tiếng Việt. Chỉ trả bản dịch, không tự viết tiếp câu.")
+        return [{"role": "system", "content": system}, {"role": "user", "content":
+                f"<ngon_ngu_goc>{req.source_language}</ngon_ngu_goc>\n<cau_can_dich>{req.text_en}</cau_can_dich>"}]
     system = load_prompt("translate_vi.txt")
     ctx = " ".join(req.preceding_context)[-max_context_chars:]
     gl = "\n".join(f"- {en} = {vi}" for en, vi in req.glossary) or "(không có)"
     user = (
         f"<tu_dien>\n{gl}\n</tu_dien>\n"
         f"<ngu_canh_truoc>{ctx or '(không có)'}</ngu_canh_truoc>\n"
+        f"<ngon_ngu_goc>{req.source_language}</ngon_ngu_goc>\n"
         f"<cau_can_dich>{req.text_en}</cau_can_dich>"
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]

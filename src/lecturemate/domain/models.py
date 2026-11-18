@@ -36,6 +36,9 @@ class TranscriptEvent:
     sequence_number: int = -1  # chỉ có ý nghĩa với final
     boundary_ns: int = 0  # monotonic ns lúc phát hiện ranh giới câu (đo độ trễ)
     asr_done_ns: int = 0
+    language: str = "und"
+    speaker_id: str | None = None
+    language_probability: float = 0.0
 
     @property
     def is_final(self) -> bool:
@@ -51,6 +54,35 @@ class TranslationRequest:
     glossary: tuple[tuple[str, str], ...] = ()
     deadline_ms: int = 10_000
     attempt: int = 0
+    source_language: str = "und"
+
+
+def is_vietnamese(language: str | None) -> bool:
+    return (language or "").lower().replace("_", "-").split("-")[0] == "vi"
+
+
+def language_name(language: str | None) -> str:
+    code = (language or "und").lower().split("-")[0]
+    names = {
+        "af": "Afrikaans", "ar": "Ả Rập", "az": "Azerbaijan", "be": "Belarus", "bg": "Bulgaria",
+        "bn": "Bengali", "bs": "Bosnia", "ca": "Catalan", "cs": "Séc", "cy": "Wales",
+        "da": "Đan Mạch", "de": "Đức", "el": "Hy Lạp", "en": "Anh", "es": "Tây Ban Nha",
+        "et": "Estonia", "fa": "Ba Tư", "fi": "Phần Lan", "fr": "Pháp", "gl": "Galicia",
+        "gu": "Gujarati", "ha": "Hausa", "he": "Do Thái", "hi": "Hindi", "hr": "Croatia",
+        "hu": "Hungary", "hy": "Armenia", "id": "Indonesia", "is": "Iceland", "it": "Ý",
+        "ja": "Nhật", "jv": "Java", "ka": "Georgia", "kk": "Kazakh", "km": "Khmer",
+        "kn": "Kannada", "ko": "Hàn", "lo": "Lào", "lt": "Lithuania", "lv": "Latvia",
+        "mg": "Malagasy", "mi": "Māori", "mk": "Macedonia", "ml": "Malayalam", "mn": "Mông Cổ",
+        "mr": "Marathi", "ms": "Mã Lai", "mt": "Malta", "my": "Myanmar", "ne": "Nepal",
+        "nl": "Hà Lan", "no": "Na Uy", "pa": "Punjabi", "pl": "Ba Lan", "ps": "Pashto",
+        "pt": "Bồ Đào Nha", "ro": "Romania", "ru": "Nga", "sd": "Sindhi", "si": "Sinhala",
+        "sk": "Slovak", "sl": "Slovenia", "sn": "Shona", "so": "Somali", "sq": "Albania",
+        "sr": "Serbia", "su": "Sunda", "sv": "Thụy Điển", "sw": "Swahili", "ta": "Tamil",
+        "te": "Telugu", "th": "Thái", "tr": "Thổ Nhĩ Kỳ", "uk": "Ukraina", "ur": "Urdu",
+        "uz": "Uzbek", "vi": "Tiếng Việt", "yi": "Yiddish", "yo": "Yoruba", "zh": "Trung",
+        "yue": "Quảng Đông",
+    }
+    return names.get(code, "Chưa rõ ngôn ngữ" if code in ("", "und") else code.upper())
 
 
 @dataclass

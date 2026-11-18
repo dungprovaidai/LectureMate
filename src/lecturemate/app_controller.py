@@ -24,7 +24,7 @@ from .audio.audio_worker import AudioCaptureWorker, AudioFrame
 from .audio.sources import AudioSource, EndOfStream, FileAudioSource
 from .audio.wav_writer import WavWriter, repair_wav
 from .config import AppConfig
-from .domain.models import SessionState, TranscriptEvent, TranslationResult
+from .domain.models import SessionState, TranscriptEvent, TranslationResult, is_vietnamese
 from .persistence.repository import SessionRepository
 from .session_controller import SessionController
 
@@ -120,6 +120,7 @@ class LiveSession:
         self.engine: StreamingASR | None = None
         self._stopping = threading.Lock()
         self._stopped = threading.Event()
+        self._preview_state: dict[str, dict] = {}
         self.device_error: str | None = None
 
     @property
@@ -147,11 +148,20 @@ class LiveSession:
         if not self.record_only:
             aq = queue.Queue(maxsize=300)  # ~30 giây audio
             committer = SegmentCommitter(self.repo, sid, translate=translate)
+            if self.cfg.translation_mode == "fast":
+                partial_interval_s = min(self.cfg.partial_interval_s, 0.5)
+                silence_to_final_s = min(self.cfg.silence_to_final_s, 0.4)
+                max_segment_s = min(self.cfg.max_segment_s, 8.0)
+            else:
+                partial_interval_s = self.cfg.partial_interval_s
+                silence_to_final_s = self.cfg.silence_to_final_s
+                max_segment_s = self.cfg.max_segment_s
             self.engine = StreamingASR(
                 self.tr, committer, self._on_transcript,
-                partial_interval_s=self.cfg.partial_interval_s,
-                silence_to_final_s=self.cfg.silence_to_final_s,
-                max_segment_s=self.cfg.max_segment_s,
+                partial_interval_s=partial_interval_s,
+                silence_to_final_s=silence_to_final_s,
+                max_segment_s=max_segment_s,
+                use_prompt=False,
                 on_error=self.sv.cb.on_error,
             )
             self.asr = ASRWorker(aq, self.engine, on_error=self.sv.cb.on_error)
@@ -179,9 +189,32 @@ class LiveSession:
 
     # --------------------------------------------------------------- events
     def _on_transcript(self, ev: TranscriptEvent) -> None:
-        if ev.is_final and self.cfg.translation_enabled and not self.record_only:
-            self.sv.tq.submit(ev.segment_id, ev.session_id, ev.boundary_ns, ev.asr_done_ns)
+        # Publish text before submitting translations, so even an instant provider
+        # cannot return a translation for a row that has not been created yet.
         self.sv.cb.on_transcript(ev)
+        if ev.is_final or ev.type == "discard":
+            self.sv.tq.cancel_previews(ev.segment_id)
+            self._preview_state.pop(ev.segment_id, None)
+        if ev.is_final and self.cfg.translation_enabled and not self.record_only and not is_vietnamese(ev.language):
+            self.sv.tq.submit(ev.segment_id, ev.session_id, ev.boundary_ns, ev.asr_done_ns)
+        elif (ev.type == "partial" and self.cfg.translation_enabled and not self.record_only
+              and self.cfg.translation_mode == "fast" and not is_vietnamese(ev.language)):
+            words = ev.text_en.split()
+            now = time.monotonic()
+            state = self._preview_state.setdefault(
+                ev.segment_id, {"words": 0, "text": "", "sent_at": 0.0}
+            )
+            # Translate the full current hypothesis rather than joining translations
+            # of isolated words. Whisper can correct earlier words as it hears more.
+            changed = ev.text_en != state["text"]
+            enough_words = len(words) >= state["words"] + 2
+            correction = bool(state["text"]) and now - state["sent_at"] >= 1.0
+            language_reliable = ev.language not in ("", "und") and ev.language_probability >= 0.55
+            if changed and language_reliable and (enough_words or correction):
+                queued = self.sv.tq.submit_preview(ev.segment_id, ev.session_id, ev.text_en, ev.language,
+                                                  ev.version)
+                if queued:
+                    state.update(words=len(words), text=ev.text_en, sent_at=now)
 
     def _on_device_error(self, msg: str) -> None:
         self.device_error = msg
@@ -262,7 +295,9 @@ def transcribe_file_job(services: AppServices, session_id: str, transcriber: Tra
             on_event(ev)
 
     eng = StreamingASR(transcriber, committer, ev_cb, partial_interval_s=1e9,
-                       silence_to_final_s=services.cfg.silence_to_final_s, max_segment_s=services.cfg.max_segment_s)
+                       silence_to_final_s=services.cfg.silence_to_final_s,
+                       max_segment_s=services.cfg.max_segment_s, use_prompt=False,
+                       on_error=services.cb.on_error)
     eng.allow_partials = False
     src = FileAudioSource(s["audio_path"])
     src.open()

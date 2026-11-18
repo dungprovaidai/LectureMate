@@ -13,7 +13,7 @@ def test_migrations_idempotent(tmp_path):
     c1.close()
     c2 = connect(tmp_path / "a.db")
     v2 = [r[0] for r in c2.execute("SELECT version FROM schema_version")]
-    assert v1 == v2 == [1, 2]
+    assert v1 == v2 == [1, 2, 3]
     assert c2.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     assert c2.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
@@ -24,6 +24,17 @@ def test_commit_final_once(repo):
     assert repo.commit_final(ev) is True
     assert repo.commit_final(ev) is False  # cùng id
     assert len(repo.list_segments(sid)) == 1
+
+
+def test_language_metadata_and_native_vietnamese_are_saved(repo):
+    sid = repo.create_session("t", "microphone")
+    ev = TranscriptEvent("final", sid, "vi-1", 0, 1000, "Xin chào", sequence_number=0,
+                         language="vi", speaker_id="1")
+
+    assert repo.commit_final(ev)
+    saved = repo.get_segment("vi-1")
+    assert saved.language == "vi" and saved.speaker_id == "1"
+    assert saved.vi_text == "Xin chào" and saved.translation_status == "done"
 
 
 def test_unique_session_sequence(repo):

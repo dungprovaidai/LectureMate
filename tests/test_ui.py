@@ -60,6 +60,23 @@ def test_translation_states(qtbot):
     assert v.rows["a"].vi.text() == "xin chào" and v.rows["a"].retry_btn.isHidden()
 
 
+def test_live_preview_translation_updates_the_large_line(qtbot):
+    from PySide6.QtWidgets import QVBoxLayout
+
+    from lecturemate.ui.subtitle_widget import SubtitleRow
+
+    row = SubtitleRow("s")
+    qtbot.addWidget(row)
+    row.set_partial(TranscriptEvent("partial", "S", "s", 0, 900, "hello there", 1,
+                                    language="en", speaker_id="1"))
+    row.set_preview_translation("Chào bạn", 0)
+
+    assert isinstance(row.body, QVBoxLayout)
+    assert row.body.itemAt(1).widget() is row.en
+    assert row.vi.text() == "Chào bạn"
+    assert row.speaker_lbl.text().endswith("Người nói 1 · ước lượng")
+
+
 def test_many_rows_and_find(qtbot):
     v = SubtitleView()
     qtbot.addWidget(v)
@@ -93,7 +110,7 @@ def window(qtbot, tmp_path, monkeypatch, repo):
         words.append((int(t * 1000) + 100, int(t * 1000) + 900, f"word{i}"))
         t += 1.7
     provider = MockProvider(lambda m: "bản dịch", latency_s=0.01)
-    cfg = AppConfig(privacy_accepted=True, partial_interval_s=0.3)
+    cfg = AppConfig(privacy_accepted=True, partial_interval_s=0.3, auto_summary_on_finish=False)
     cfg.save = lambda *a, **k: None
     w = mw.MainWindow(cfg, repo, transcriber_factory=lambda: FakeTranscriber(words),
                       provider_getter=lambda: provider,
@@ -181,5 +198,8 @@ def test_settings_dialog_opens(qtbot, window, repo):
     d = SettingsDialog(window.cfg, repo)
     qtbot.addWidget(d)
     d.theme.setCurrentIndex(1)
+    d.translation_mode.setCurrentIndex(d.translation_mode.findData("fast"))
+    d.auto_summary.setChecked(True)
     d._accept()
     assert window.cfg.theme == "light"
+    assert window.cfg.translation_mode == "fast" and window.cfg.auto_summary_on_finish

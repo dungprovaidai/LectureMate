@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from ..domain.models import TranslationRequest, TranslationResult, TranslationStatus
+from ..domain.models import TranslationRequest, TranslationResult, TranslationStatus, is_vietnamese
 from .glossary import Glossary, quality_warnings
 from .llm_provider import LLMError, LLMProvider
 from .translator import build_messages, clean_output
@@ -32,6 +32,14 @@ class Job:
     enqueued_ns: int
     boundary_ns: int = 0
     asr_done_ns: int = 0
+
+
+@dataclass
+class PreviewJob(Job):
+    preview_text: str = ""
+    source_language: str = "und"
+    revision: int = 0
+    cancelled: bool = False
 
 
 def cost_usd(in_tok: int, out_tok: int, price_in: float, price_out: float) -> float:
@@ -78,6 +86,8 @@ class TranslationQueue:
 
         self._jobs: collections.deque[Job] = collections.deque()
         self._queued_ids: set[str] = set()
+        self._previews: dict[str, PreviewJob] = {}
+        self._active_preview: PreviewJob | None = None
         self._cv = threading.Condition()
         self._stop = threading.Event()
         self._limit = self.max_in_flight
@@ -108,6 +118,9 @@ class TranslationQueue:
             left = len(self._jobs)
             self._jobs.clear()
             self._queued_ids.clear()
+            self._previews.clear()
+            if self._active_preview:
+                self._active_preview.cancelled = True
             self._stop.set()
             self._cv.notify_all()
         for t in self._threads:
@@ -127,9 +140,30 @@ class TranslationQueue:
             self._queued_ids.add(segment_id)
             self._cv.notify()
 
-    def retry_pending(self, session_id: str | None = None, include_skipped: bool = False) -> int:
+    def submit_preview(self, segment_id: str, session_id: str, text: str, source_language: str,
+                       revision: int) -> bool:
+        """Keep only the latest pending hypothesis. Finals always get the next free worker."""
+        if is_vietnamese(source_language) or self.max_in_flight < 2:
+            return False
+        with self._cv:
+            if self._stop.is_set():
+                return False
+            self._previews[segment_id] = PreviewJob(segment_id, session_id, time.monotonic_ns(),
+                                                    preview_text=text, source_language=source_language,
+                                                    revision=revision)
+            self._cv.notify()
+            return True
+
+    def cancel_previews(self, segment_id: str) -> None:
+        with self._cv:
+            self._previews.pop(segment_id, None)
+            if self._active_preview and self._active_preview.segment_id == segment_id:
+                self._active_preview.cancelled = True
+
+    def retry_pending(self, session_id: str | None = None, include_skipped: bool = False,
+                      include_failed: bool = True) -> int:
         """Đưa các câu pending/failed (và skipped nếu muốn) vào hàng đợi, theo thứ tự."""
-        rows = self.repo.pending_translations(session_id, include_failed=True, include_skipped=include_skipped)
+        rows = self.repo.pending_translations(session_id, include_failed=include_failed, include_skipped=include_skipped)
         n = 0
         with self._cv:
             for r in rows:
@@ -159,17 +193,27 @@ class TranslationQueue:
         with self._cv:
             while not self._stop.is_set():
                 now = time.monotonic()
-                if self._jobs and self._active < self._limit and now >= self._cooldown_until:
-                    job = self._jobs.popleft()
-                    self._queued_ids.discard(job.segment_id)
-                    self._active += 1
-                    return job
+                if self._active < self._limit and now >= self._cooldown_until:
+                    if self._jobs:
+                        job = self._jobs.popleft()
+                        self._queued_ids.discard(job.segment_id)
+                        self._active += 1
+                        return job
+                    while self._previews and self._active_preview is None:
+                        key = next(iter(self._previews))
+                        preview = self._previews.pop(key)
+                        if time.monotonic_ns() - preview.enqueued_ns <= 2_500_000_000:
+                            self._active_preview = preview
+                            self._active += 1
+                            return preview
                 wait = 0.2 if not self._jobs else max(0.05, min(0.5, self._cooldown_until - now))
                 self._cv.wait(wait)
             return None
 
-    def _done(self) -> None:
+    def _done(self, job: Job) -> None:
         with self._cv:
+            if job is self._active_preview:
+                self._active_preview = None
             self._active -= 1
             self._cv.notify_all()
 
@@ -182,12 +226,13 @@ class TranslationQueue:
                 self._process(job)
             except Exception:
                 log.exception("Lỗi không lường trước khi dịch")
-                try:
-                    self.repo.release_translation(job.segment_id, TranslationStatus.FAILED, "internal")
-                except Exception:
-                    pass
+                if not isinstance(job, PreviewJob):
+                    try:
+                        self.repo.release_translation(job.segment_id, TranslationStatus.FAILED, "internal")
+                    except Exception:
+                        pass
             finally:
-                self._done()
+                self._done(job)
 
     def _sleep(self, s: float) -> bool:
         """Ngủ có thể bị ngắt bởi stop. Trả False nếu bị dừng."""
@@ -201,6 +246,12 @@ class TranslationQueue:
                 log.exception("on_result lỗi")
 
     def _process(self, job: Job) -> None:
+        if isinstance(job, PreviewJob):
+            self._process_preview(job)
+            return
+        seg = self.repo.get_segment(job.segment_id)
+        if seg is None or is_vietnamese(seg.language) or seg.translation_status not in ("pending", "failed"):
+            return
         provider = self.provider_getter()
         if provider is None:
             self._set_status("disabled")
@@ -214,14 +265,12 @@ class TranslationQueue:
             return
         if not self.repo.claim_translation(job.segment_id):
             return  # đã dịch / đang dịch ở luồng khác
-        seg = self.repo.get_segment(job.segment_id)
-        if seg is None:
-            return
         gl = self.glossary_getter(seg.session_id)
         terms = gl.relevant(seg.en_text)
         ctx = self.repo.preceding_texts(seg.session_id, seg.sequence_number, self.context_sentences)
         req = TranslationRequest(seg.id, seg.session_id, seg.en_text, tuple(ctx),
-                                 tuple((t.en, t.vi) for t in terms), int(self.timeout_s * 1000))
+                                 tuple((t.en, t.vi) for t in terms), int(self.timeout_s * 1000),
+                                 source_language=seg.language)
         messages = build_messages(req)
         context_chars = sum(len(m["content"]) for m in messages)
 
@@ -299,3 +348,49 @@ class TranslationQueue:
             self._was_offline = False
             if self.active_session:
                 self.retry_pending(self.active_session)
+
+    def _process_preview(self, job: PreviewJob) -> None:
+        if job.cancelled:
+            return
+        provider = self.provider_getter()
+        if provider is None:
+            return
+        if self.budget > 0 and self.repo.month_cost_usd() >= self.budget:
+            self._set_status("budget")
+            return
+
+        req = TranslationRequest(job.segment_id, job.session_id, job.preview_text, source_language=job.source_language)
+        try:
+            if job.cancelled:
+                return
+            resp = provider.complete(build_messages(req, preview=True), max_tokens=min(96, self.max_tokens),
+                                     timeout_s=min(4.0, self.timeout_s))
+        except LLMError as exc:
+            if self._stop.is_set():
+                return
+            if exc.code == "rate_limit":
+                with self._cv:
+                    self._limit = 1
+                    self._streak = 0
+                    self._cooldown_until = max(self._cooldown_until, time.monotonic()
+                                               + (exc.retry_after_s or self.backoff_base))
+                self._set_status("retry")
+            elif exc.code == "auth":
+                self._set_status("auth_error")
+            elif exc.code in ("offline", "timeout"):
+                self._set_status("offline" if exc.code == "offline" else "retry")
+            return
+
+        if self._stop.is_set():
+            return
+        text = clean_output(resp.text)
+        result = TranslationResult(job.segment_id, text, TranslationStatus.DONE if text else TranslationStatus.FAILED,
+                                   model=resp.model,
+                                   input_tokens=resp.input_tokens, output_tokens=resp.output_tokens,
+                                   elapsed_ms=resp.total_ms, first_token_ms=resp.ttft_ms,
+                                   extra={"preview": True, "revision": job.revision})
+        self.repo.record_request(job.session_id, None, "preview", result,
+                                 cost_usd(resp.input_tokens, resp.output_tokens, self.price_in, self.price_out))
+        if text and not job.cancelled:
+            self._set_status("connected")
+            self._emit(result)

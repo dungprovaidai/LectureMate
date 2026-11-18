@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 from .ai.citations import TS, _canon
-from .domain.models import format_ts
+from .domain.models import format_ts, language_name
 
 
 def anchor(ms_or_ts) -> str:
@@ -31,7 +31,9 @@ def transcript_markdown(session: dict, segments) -> str:
         ts = format_ts(s.start_ms)
         vi = s.vi_text if s.vi_text else ("_(chưa dịch)_" if s.translation_status != "failed" else "_(dịch lỗi)_")
         flag = " ⚑" if s.flagged else ""
-        lines.append(f'<a id="{anchor(s.start_ms)}"></a>**[{ts}]**{flag} {s.en_text}  ')
+        speaker = f" · Người nói {s.speaker_id}" if getattr(s, "speaker_id", None) else ""
+        language = language_name(getattr(s, "language", "und"))
+        lines.append(f'<a id="{anchor(s.start_ms)}"></a>**[{ts}]**{flag} [{language}{speaker}] {s.en_text}  ')
         lines.append(f"↳ {vi}")
         lines.append("")
     return "\n".join(lines)
@@ -42,7 +44,10 @@ def transcript_json(session: dict, segments) -> str:
         "session": {k: session.get(k) for k in ("id", "title", "course_name", "started_at", "ended_at", "duration_ms")},
         "segments": [
             {"id": s.id, "sequence": s.sequence_number, "start_ms": s.start_ms, "end_ms": s.end_ms,
-             "en": s.en_text, "vi": s.vi_text, "translation_status": s.translation_status, "flagged": s.flagged}
+             "en": s.en_text, "text": s.en_text, "language": getattr(s, "language", "und"),
+              "language_probability": getattr(s, "language_probability", 0.0),
+              "speaker_id": getattr(s, "speaker_id", None), "vi": s.vi_text,
+             "translation_status": s.translation_status, "flagged": s.flagged}
             for s in segments
         ],
     }

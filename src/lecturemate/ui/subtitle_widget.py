@@ -4,7 +4,7 @@
 - final: cố định; partial đến muộn cho cùng ID bị bỏ qua.
 - bản dịch: pending ("Đang dịch…") / done / failed (nút Thử lại) — không bao giờ hiển thị
   bản chờ như đã xong.
-- Cửa sổ hẹp (< 760 px): EN và VI xếp dọc trong cùng thẻ.
+- Tiếng Việt lớn phía trên, nguyên văn nhỏ phía dưới ở mọi kích thước cửa sổ.
 """
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QBoxLayout, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                                QSizePolicy, QVBoxLayout, QWidget)
 
-from ..domain.models import TranscriptEvent, TranslationResult, format_ts
+from ..domain.models import TranscriptEvent, TranslationResult, format_ts, is_vietnamese, language_name
 
 PENDING_TEXT = "Đang dịch…"
 WAITING_NET_TEXT = "Chờ dịch lại khi có mạng"
-FAILED_TEXT = "Chưa dịch được — bản tiếng Anh đã lưu"
+FAILED_TEXT = "Chưa dịch được — nguyên văn đã lưu"
 NO_KEY_TEXT = "Chưa dịch (chưa có API key)"
 SKIPPED_TEXT = "—"
 
@@ -32,6 +32,7 @@ class SubtitleRow(QFrame):
         self.version = -1
         self.start_ms = 0
         self.translation_status = "pending"
+        self.preview_revision = -1
         self.setObjectName("row")
         self.setFocusPolicy(Qt.StrongFocus)
         outer = QVBoxLayout(self)
@@ -46,8 +47,8 @@ class SubtitleRow(QFrame):
         top.addStretch(1)
         top.addWidget(self.state_lbl)
         outer.addLayout(top)
-        self.body = QBoxLayout(QBoxLayout.LeftToRight)
-        self.body.setSpacing(16)
+        self.body = QVBoxLayout()
+        self.body.setSpacing(2)
         self.en = QLabel()
         self.en.setWordWrap(True)
         self.en.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -65,9 +66,14 @@ class SubtitleRow(QFrame):
         vi_box.setSpacing(2)
         vi_box.addWidget(self.vi)
         vi_box.addWidget(self.retry_btn, 0, Qt.AlignLeft)
-        self.body.addWidget(self.en, 1)
-        self.body.addLayout(vi_box, 1)
+        self.body.addLayout(vi_box)
+        self.body.addWidget(self.en)
         outer.addLayout(self.body)
+        self.speaker_lbl = QLabel()
+        self.speaker_lbl.setObjectName("ts")
+        top.insertWidget(1, self.speaker_lbl)
+        self.language = "und"
+        self.speaker_id: str | None = None
         self._set_prop("partial", True)
 
     def mousePressEvent(self, e):
@@ -80,7 +86,15 @@ class SubtitleRow(QFrame):
         self.style().polish(self)
 
     def set_narrow(self, narrow: bool) -> None:
-        self.body.setDirection(QBoxLayout.TopToBottom if narrow else QBoxLayout.LeftToRight)
+        self.body.setDirection(QBoxLayout.TopToBottom)
+
+    def _set_source_labels(self, language: str, speaker_id: str | None) -> None:
+        self.language = language or "und"
+        self.speaker_id = speaker_id
+        parts = [language_name(self.language)]
+        if speaker_id:
+            parts.append(f"Người nói {speaker_id} · ước lượng")
+        self.speaker_lbl.setText(" · ".join(parts))
 
     def set_partial(self, ev: TranscriptEvent) -> bool:
         if self.is_final or ev.version <= self.version:
@@ -88,13 +102,25 @@ class SubtitleRow(QFrame):
         self.version = ev.version
         self.start_ms = ev.start_ms
         self.ts.setText(format_ts(ev.start_ms))
-        self.en.setObjectName("partial")
+        self._set_source_labels(ev.language, ev.speaker_id)
+        self.en.setObjectName("original")
         self.en.setText(ev.text_en)
         self.en.style().unpolish(self.en)
         self.en.style().polish(self.en)
         self.state_lbl.setText("Tạm · đang nhận dạng")
-        self.vi.setObjectName("pending")
-        self.vi.setText("")
+        if is_vietnamese(ev.language):
+            self.vi.setObjectName("vi")
+            self.vi.setText(ev.text_en)
+            self.en.hide()
+        else:
+            self.en.show()
+            if self.preview_revision >= 0:
+                self.vi.setObjectName("preview")
+            else:
+                self.vi.setObjectName("pending")
+                self.vi.setText("Đang nghe thêm…")
+        self.vi.style().unpolish(self.vi)
+        self.vi.style().polish(self.vi)
         return True
 
     def set_final(self, ev: TranscriptEvent, translating: bool = True) -> None:
@@ -102,18 +128,23 @@ class SubtitleRow(QFrame):
         self.version = max(self.version, ev.version)
         self.start_ms = ev.start_ms
         self.ts.setText(f"{format_ts(ev.start_ms)} – {format_ts(ev.end_ms)}")
-        self.en.setObjectName("en")
+        self._set_source_labels(ev.language, ev.speaker_id)
+        self.en.setVisible(not is_vietnamese(ev.language))
+        self.en.setObjectName("original")
         self.en.setText(ev.text_en)
         self.en.style().unpolish(self.en)
         self.en.style().polish(self.en)
         self.state_lbl.setText("Đã lưu")
         self._set_prop("partial", False)
         self.setAccessibleName(f"Đoạn {format_ts(ev.start_ms)}: {ev.text_en}")
-        if self.translation_status == "pending":
+        if is_vietnamese(ev.language):
+            self.set_translation(ev.text_en, "done")
+        elif self.translation_status == "pending":
             self.set_translation(None, "pending" if translating else "skipped")
 
     def set_translation(self, text: str | None, status: str, error_code: str | None = None) -> None:
         self.translation_status = status
+        self.preview_revision = -1
         self.retry_btn.hide()
         if status == "done" and text:
             self.vi.setObjectName("vi")
@@ -136,6 +167,16 @@ class SubtitleRow(QFrame):
                 self.vi.setText("Chưa dịch (đã chạm giới hạn chi phí)")
             else:
                 self.vi.setText(PENDING_TEXT)
+        self.vi.style().unpolish(self.vi)
+        self.vi.style().polish(self.vi)
+
+    def set_preview_translation(self, text: str, revision: int) -> None:
+        if self.is_final or is_vietnamese(self.language) or revision <= self.preview_revision or not text:
+            return
+        self.preview_revision = revision
+        self.translation_status = "pending"
+        self.vi.setObjectName("preview")
+        self.vi.setText(text)
         self.vi.style().unpolish(self.vi)
         self.vi.style().polish(self.vi)
 
@@ -217,14 +258,19 @@ class SubtitleView(QScrollArea):
 
     def apply_translation(self, segment_id: str, res: TranslationResult) -> None:
         row = self.rows.get(segment_id)
-        if row:
-            row.set_translation(res.text_vi, res.status.value, res.error_code)
+        if not row:
+            return
+        if res.extra.get("preview"):
+            if res.status.value == "done" and res.text_vi:
+                row.set_preview_translation(res.text_vi, int(res.extra.get("revision", -1)))
+            return
+        row.set_translation(res.text_vi, res.status.value, res.error_code)
 
     def load_segments(self, segments) -> None:
         """Nạp các segment đã lưu (khi mở lại / phục hồi)."""
         for s in segments:
             ev = TranscriptEvent("final", s.session_id, s.id, s.start_ms, s.end_ms, s.en_text,
-                                 sequence_number=s.sequence_number)
+                                 sequence_number=s.sequence_number, language=s.language, speaker_id=s.speaker_id)
             row = self._row(s.id)
             row.set_final(ev, True)
             row.set_translation(s.vi_text, s.translation_status, s.error_code)

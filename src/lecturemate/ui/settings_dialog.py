@@ -23,7 +23,7 @@ from .widgets import muted
 PRIVACY_TEXT = (
     "• Âm thanh (WAV) và cơ sở dữ liệu chỉ lưu trên máy này (%LOCALAPPDATA%\\LectureMate).\n"
     "• Nhận dạng giọng nói (Faster-Whisper) chạy trên máy, KHÔNG gửi âm thanh lên mạng.\n"
-    "• Dịch bằng AI sẽ gửi các đoạn VĂN BẢN tiếng Anh (và câu trước làm ngữ cảnh) qua Internet tới "
+    "• Dịch bằng AI sẽ gửi các đoạn VĂN BẢN không phải tiếng Việt (và câu trước làm ngữ cảnh) qua Internet tới "
     "nhà cung cấp API bạn cấu hình. Ghi chú AI / Hỏi bài cũng gửi văn bản transcript.\n"
     "• API key lưu trong Windows Credential Manager, không nằm trong file cấu hình hay log.\n"
     "• Không đồng bộ đám mây. Bạn có thể xóa từng buổi học (âm thanh + transcript + ghi chú).\n"
@@ -153,6 +153,10 @@ class SettingsDialog(QDialog):
         for d in ("auto", "cpu", "cuda"):
             self.asr_device.addItem(d)
         self.asr_device.setCurrentText(cfg.asr_device)
+        self.translation_mode = QComboBox()
+        self.translation_mode.addItem("Nhanh — cập nhật khi có thêm ~2 từ (nhiều lượt API hơn)", "fast")
+        self.translation_mode.addItem("Tự nhiên — chờ hết cụm/câu, dịch ổn định hơn", "natural")
+        self.translation_mode.setCurrentIndex(max(0, self.translation_mode.findData(cfg.translation_mode)))
         self.mode = QComboBox()
         self.mode.addItem("Trực tiếp (phụ đề realtime)", "realtime")
         self.mode.addItem("Chỉ ghi âm — phiên âm & dịch sau buổi (máy yếu)", "record_only")
@@ -171,6 +175,7 @@ class SettingsDialog(QDialog):
         f.addRow("Nguồn mặc định:", self.source)
         f.addRow("Model ASR:", self.asr_model)
         f.addRow("Thiết bị ASR:", self.asr_device)
+        f.addRow("Nhịp dịch:", self.translation_mode)
         f.addRow("Chế độ:", self.mode)
         f.addRow("", self.save_audio)
         f.addRow("Im lặng để chốt câu:", self.silence)
@@ -178,6 +183,8 @@ class SettingsDialog(QDialog):
         devs = list_devices()
         f.addRow(muted("Thiết bị tìm thấy: " + (", ".join(f"{d.name} ({'loopback' if d.kind == 'loopback' else 'mic'})"
                                                           for d in devs) or "không có (chưa cài soundcard?)")))
+        f.addRow(muted("Ngôn ngữ được tự nhận diện theo từng đoạn. Nhãn người nói là ước lượng nhẹ từ âm sắc; "
+                       "có thể nhầm và không phải nhận diện danh tính."))
         f.addRow(muted("Chọn model theo kết quả benchmark (tools/benchmark_asr.py). "
                        "Model lớn chính xác hơn nhưng có thể không theo kịp realtime trên CPU."))
         tabs.addTab(a, "Âm thanh & ASR")
@@ -187,6 +194,8 @@ class SettingsDialog(QDialog):
         pf = QFormLayout(p)
         self.tr_enabled = QCheckBox("Bật dịch bằng AI (gửi văn bản qua Internet)")
         self.tr_enabled.setChecked(cfg.translation_enabled)
+        self.auto_summary = QCheckBox("Tự tạo tóm tắt tiếng Việt khi kết thúc buổi (gửi transcript qua API)")
+        self.auto_summary.setChecked(cfg.auto_summary_on_finish)
         self.base_url = QLineEdit(cfg.api_base_url)
         self.model = QLineEdit(cfg.api_model)
         self.key = QLineEdit()
@@ -229,6 +238,7 @@ class SettingsDialog(QDialog):
         self.ctx.setRange(0, 4)
         self.ctx.setValue(cfg.context_sentences)
         pf.addRow("", self.tr_enabled)
+        pf.addRow("", self.auto_summary)
         pf.addRow("Base URL:", self.base_url)
         pf.addRow("Model:", self.model)
         pf.addRow("API key:", key_row)
@@ -336,6 +346,8 @@ class SettingsDialog(QDialog):
         c.source_type = self.source.currentData()
         c.asr_model = self.asr_model.currentText()
         c.asr_device = self.asr_device.currentText()
+        c.translation_mode = self.translation_mode.currentData()
+        c.auto_summary_on_finish = self.auto_summary.isChecked()
         c.asr_mode = self.mode.currentData()
         c.save_audio = self.save_audio.isChecked()
         c.silence_to_final_s = self.silence.value()

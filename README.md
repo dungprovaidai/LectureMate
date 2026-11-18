@@ -1,12 +1,15 @@
 # LectureMate AI
 
-Ứng dụng Windows cho sinh viên nghe giảng tiếng Anh: **phụ đề Anh–Việt gần thời gian thực**, tự lưu
+Ứng dụng Windows cho sinh viên nghe giảng: **phụ đề đa ngôn ngữ → Việt gần thời gian thực**, tự lưu
 âm thanh + transcript có mốc thời gian, xem lại/tua theo đoạn, **ghi chú AI** và **hỏi đáp có dẫn mốc**.
+
+Phụ đề đặt bản dịch tiếng Việt lớn phía trên, nguyên văn nhỏ phía dưới; ngôn ngữ tự nhận diện. Nhãn
+“Người nói 1/2…” là ước lượng nhẹ từ âm thanh, không xác minh danh tính và có thể nhầm.
 
 ```
 Micro / WASAPI loopback → AudioCaptureWorker ─┬─→ WAV (local)
                                               └─→ VAD + StreamingASR (Faster-Whisper, local)
-                                                   ├─ partial → UI (chữ nhạt, cập nhật tại chỗ)
+                                                   ├─ partial → UI (chữ nhạt, cập nhật tại chỗ; dịch nháp tùy chọn)
                                                    └─ final  → SQLite → TranslationQueue → Agnes API → UI
 ```
 
@@ -14,6 +17,9 @@ Micro / WASAPI loopback → AudioCaptureWorker ─┬─→ WAV (local)
 - Không cần Ollama, không cần GPU (GPU giúp nhanh hơn). Một nguồn âm thanh mỗi buổi.
 - Mất mạng vẫn ghi âm + phiên âm; bản dịch tự bù khi có mạng lại.
 - Máy yếu: chế độ **chỉ ghi âm → phiên âm & dịch sau buổi**.
+- *Thiết lập → Âm thanh & ASR → Nhịp dịch*: chọn **Nhanh** (dịch nháp cập nhật liên tục, tăng số lượt API)
+  hoặc **Tự nhiên** (dịch ổn định theo câu). Khi kết thúc, buổi có tab dịch tổng; có thể bật/tắt tự tóm tắt
+  trong *Thiết lập → API dịch*.
 
 ## Cài đặt (Windows 10/11, Python 3.10 trở lên)
 

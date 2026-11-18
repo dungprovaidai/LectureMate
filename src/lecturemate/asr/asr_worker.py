@@ -23,6 +23,7 @@ import numpy as np
 from ..audio.audio_worker import END, FLUSH, AudioFrame
 from ..domain.models import TranscriptEvent
 from .segment_committer import SegmentCommitter
+from .speaker import SpeakerTracker
 from .transcriber import Transcriber
 from .vad import FRAME, EnergyVAD
 
@@ -62,6 +63,7 @@ class StreamingASR:
         vad: EnergyVAD | None = None,
         clock_ns: Callable[[], int] = time.monotonic_ns,
         on_error: Callable[[str], None] | None = None,
+        speaker_tracker: SpeakerTracker | None = None,
     ):
         self.tr = transcriber
         self.committer = committer
@@ -76,6 +78,7 @@ class StreamingASR:
         self.clock_ns = clock_ns
         self.on_error = on_error
         self._reported_error = False
+        self.speakers = speaker_tracker or SpeakerTracker()
         self.stats = ASRStats()
         self.allow_partials = True
         self._reset(0)
@@ -95,6 +98,7 @@ class StreamingASR:
         self.version = 0
         self.since_partial = 0
         self.frame_energy: list[float] = []
+        self.speaker_id: str | None = None
 
     def _audio(self) -> np.ndarray:
         return np.concatenate(self.buf) if self.buf else np.zeros(0, np.float32)
@@ -176,9 +180,14 @@ class StreamingASR:
             return
         self.version += 1
         self.stats.partials += 1
+        if self.speaker_id is None:
+            self.speaker_id = self.speakers.assign(audio)
+        language, language_probability = _segment_language(segs)
         self.on_event(TranscriptEvent("partial", self.committer.session_id, self.seg_id,
                                       self.buf_start * 1000 // SR,
-                                      (self.buf_start + self.buf_len) * 1000 // SR, text, self.version))
+                                      (self.buf_start + self.buf_len) * 1000 // SR, text, self.version,
+                                      language=language, speaker_id=self.speaker_id,
+                                      language_probability=language_probability))
 
     def finalize(self, reason: str = "flush") -> TranscriptEvent | None:
         if not self.in_utt or self.speech_samples < self.min_speech:
@@ -219,8 +228,11 @@ class StreamingASR:
         if segs:
             start_ms = max(offset_ms, min(s.start_ms for s in segs))
             end_ms = min(end_ms, max(s.end_ms for s in segs)) if max(s.end_ms for s in segs) > start_ms else end_ms
+        language, language_probability = _segment_language(segs)
         ev = TranscriptEvent("final", self.committer.session_id, seg_id, start_ms, end_ms, text,
-                             self.version + 1, boundary_ns=boundary_ns, asr_done_ns=self.clock_ns())
+                             self.version + 1, boundary_ns=boundary_ns, asr_done_ns=self.clock_ns(),
+                             language=language, speaker_id=(self.speaker_id or self.speakers.assign(audio)) if text else None,
+                             language_probability=language_probability)
         committed = self.committer.commit(ev, speech_ratio) if text else None
         if committed is None:
             if self.version > 0:
@@ -268,6 +280,23 @@ class StreamingASR:
             self.frame_energy.append(float(np.mean(self._rem * self._rem)))
             self._rem = np.zeros(0, np.float32)
         return self.finalize("flush")
+
+
+def _segment_language(segments) -> tuple[str, float]:
+    # Whisper returns one language per input window. Weighting also supports other
+    # transcribers returning multiple language-labelled segments.
+    weights: dict[str, tuple[int, float]] = {}
+    for segment in segments:
+        language = getattr(segment, "language", "und") or "und"
+        weight, probability_sum = weights.get(language, (0, 0.0))
+        text_weight = max(1, len(segment.text))
+        weights[language] = (weight + text_weight,
+                             probability_sum + text_weight * float(getattr(segment, "language_probability", 0.0)))
+    if not weights:
+        return "und", 0.0
+    language = max(weights, key=lambda item: weights[item][0])
+    weight, probability_sum = weights[language]
+    return language, probability_sum / weight
 
 
 class ASRWorker(threading.Thread):

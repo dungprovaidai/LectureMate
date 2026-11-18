@@ -19,6 +19,8 @@ class ASRSegment:
     text: str
     no_speech_prob: float = 0.0
     avg_logprob: float = 0.0
+    language: str = "und"
+    language_probability: float = 0.0
 
 
 class Transcriber(Protocol):
@@ -33,12 +35,12 @@ class FasterWhisperTranscriber:
     từ Hugging Face lần đầu — cần mạng, hoặc đặt sẵn trong thư mục models/)."""
 
     def __init__(self, model_size: str = "base", device: str = "auto", compute_type: str = "int8",
-                 language: str = "en", download_root: str | None = None, cpu_threads: int = 0,
+                 language: str | None = None, download_root: str | None = None, cpu_threads: int = 0,
                  final_beam_size: int = 2):
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
-        self.language = language
+        self.language = None if language in (None, "", "auto") else language
         self.download_root = download_root
         self.cpu_threads = cpu_threads
         self.final_beam = final_beam_size
@@ -93,7 +95,7 @@ class FasterWhisperTranscriber:
 
     def _transcribe_with_model(self, model, audio: np.ndarray, offset_ms: int, *, final: bool,
                                prompt: str | None = None) -> list[ASRSegment]:
-        segs, _info = model.transcribe(
+        segs, info = model.transcribe(
             audio.astype(np.float32),
             language=self.language,
             beam_size=self.final_beam if final else 1,
@@ -104,10 +106,13 @@ class FasterWhisperTranscriber:
             without_timestamps=not final,
             vad_filter=False,
         )
+        detected_language = getattr(info, "language", None) or self.language or "und"
+        language_probability = float(getattr(info, "language_probability", 0.0) or 0.0)
         out = []
         for s in segs:
             out.append(ASRSegment(offset_ms + int(s.start * 1000), offset_ms + int(s.end * 1000),
-                                  s.text.strip(), float(s.no_speech_prob), float(s.avg_logprob)))
+                                  s.text.strip(), float(s.no_speech_prob), float(s.avg_logprob),
+                                  detected_language, language_probability))
         return out
 
 

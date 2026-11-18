@@ -11,8 +11,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHea
 
 from ..ai.notes_generator import NotesGenerator
 from ..ai.qa_service import QAService
+from ..ai.translation_queue import cost_usd
 from ..config import data_dir
-from ..domain.models import format_ts, parse_ts
+from ..domain.models import TranslationResult, TranslationStatus, format_ts, language_name, parse_ts
 from ..export_markdown import notes_markdown, safe_filename, transcript_json, transcript_markdown, write_text
 from .audio_player import AudioPlayer, segment_at
 from .bridge import run_async
@@ -34,6 +35,7 @@ class SessionDetail(QWidget):
         self.session: dict | None = None
         self.segments = []
         self._current_row = -1
+        self._summary_running = False
 
         lay = QVBoxLayout(self)
         head = QHBoxLayout()
@@ -75,29 +77,43 @@ class SessionDetail(QWidget):
         for w in (self.find_edit, self.retry_btn, self.transcribe_btn, self.exp_md, self.exp_json):
             bar.addWidget(w, 1 if w is self.find_edit else 0)
         tl.addLayout(bar)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Mốc", "Original (EN)", "Tiếng Việt", "Trạng thái", "⚑"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Mốc", "Người nói / ngôn ngữ", "Nguyên văn", "Tiếng Việt", "Trạng thái", "⚑"])
         self.table.verticalHeader().hide()
         self.table.setWordWrap(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(2, QHeaderView.Stretch)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(3, QHeaderView.Stretch)
         hh.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeToContents)
         self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.itemChanged.connect(self._on_item_changed)
         tl.addWidget(self.table, 1)
-        tl.addWidget(muted("Click một đoạn để tua âm thanh. Nhấp đúp vào ô Tiếng Việt/Original để sửa. Cột ⚑: đánh dấu cần xem lại."))
+        tl.addWidget(muted("Click một đoạn để tua âm thanh. Nhấp đúp vào ô Tiếng Việt/Nguyên văn để sửa. Cột ⚑: đánh dấu cần xem lại."))
         self.tabs.addTab(t, "Transcript")
+
+        # ---- full Vietnamese translation tab
+        full = QWidget()
+        fl = QVBoxLayout(full)
+        self.full_translation_status = muted("Bản dịch tiếng Việt theo thứ tự bài giảng.")
+        self.full_translation = QTextBrowser()
+        self.full_translation.setOpenLinks(False)
+        export_full = QPushButton("Xuất bản dịch tổng (.txt)")
+        export_full.clicked.connect(self._export_full_translation)
+        fl.addWidget(self.full_translation_status)
+        fl.addWidget(self.full_translation, 1)
+        fl.addWidget(export_full)
+        self.tabs.addTab(full, "Dịch tổng")
 
         # ---- notes tab
         n = QWidget()
         nl = QVBoxLayout(n)
         nbar = QHBoxLayout()
-        self.gen_btn = QPushButton("Tạo ghi chú AI")
+        self.gen_btn = QPushButton("Tạo tóm tắt AI")
         self.gen_btn.setObjectName("primary")
         self.gen_btn.clicked.connect(self._gen_notes)
         self.save_notes_btn = QPushButton("Lưu")
@@ -112,7 +128,7 @@ class SessionDetail(QWidget):
         split = QSplitter(Qt.Horizontal)
         self.notes_edit = QTextEdit()
         self.notes_edit.setAcceptRichText(False)
-        self.notes_edit.setPlaceholderText("Ghi chú Markdown. Bấm “Tạo ghi chú AI” hoặc tự viết.")
+        self.notes_edit.setPlaceholderText("Tóm tắt / ghi chú tiếng Việt. Bấm “Tạo tóm tắt AI” hoặc tự viết.")
         self.notes_edit.textChanged.connect(self._preview_notes)
         self.notes_view = QTextBrowser()
         self.notes_view.setOpenLinks(False)
@@ -121,7 +137,7 @@ class SessionDetail(QWidget):
         split.addWidget(self.notes_view)
         nl.addWidget(split, 1)
         nl.addWidget(muted("Ghi chú do AI tạo chỉ dựa trên transcript; mốc không có thật bị loại và hiển thị [mốc?]. Hãy kiểm tra lại mục “Cần kiểm tra lại”."))
-        self.tabs.addTab(n, "Ghi chú")
+        self.tabs.addTab(n, "Tóm tắt")
 
         # ---- QA tab
         q = QWidget()
@@ -165,6 +181,7 @@ class SessionDetail(QWidget):
         self._preview_notes()
         self.notes_status.setText(f"Lưu lúc {notes['updated_at'][:16]}" if notes else "")
         self.answer.clear()
+        self.tabs.setCurrentIndex(1)
 
     def reload_segments(self) -> None:
         if not self.session:
@@ -176,6 +193,9 @@ class SessionDetail(QWidget):
             ts = QTableWidgetItem(format_ts(s.start_ms))
             ts.setFlags(ts.flags() & ~Qt.ItemIsEditable)
             ts.setData(Qt.UserRole, s.id)
+            speaker = f"Người nói {s.speaker_id} · ước lượng" if s.speaker_id else "Người nói —"
+            meta = QTableWidgetItem(f"{speaker}\n{language_name(s.language)}")
+            meta.setFlags(meta.flags() & ~Qt.ItemIsEditable)
             en = QTableWidgetItem(s.en_text)
             vi = QTableWidgetItem(s.vi_text or "")
             st = QTableWidgetItem(STATUS_VI.get(s.translation_status, s.translation_status))
@@ -184,10 +204,11 @@ class SessionDetail(QWidget):
             fl.setFlags((fl.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable)
             fl.setCheckState(Qt.Checked if s.flagged else Qt.Unchecked)
             fl.setToolTip("Cần xem lại")
-            for c, it in enumerate((ts, en, vi, st, fl)):
+            for c, it in enumerate((ts, meta, en, vi, st, fl)):
                 self.table.setItem(i, c, it)
         self.table.resizeRowsToContents()
         self.table.blockSignals(False)
+        self._refresh_full_translation()
         missing = sum(1 for s in self.segments if s.translation_status != "done")
         self.retry_btn.setText(f"Dịch lại các đoạn còn thiếu ({missing})")
         self.retry_btn.setEnabled(missing > 0)
@@ -206,8 +227,8 @@ class SessionDetail(QWidget):
             self.load(self.session["id"])
 
     def _on_cell_clicked(self, row: int, col: int) -> None:
-        if col == 4:
-            it = self.table.item(row, 4)
+        if col == 5:
+            it = self.table.item(row, 5)
             self.repo.set_flag(self.segments[row].id, it.checkState() == Qt.Checked)
             return
         if 0 <= row < len(self.segments):
@@ -222,14 +243,15 @@ class SessionDetail(QWidget):
         if not (0 <= r < len(self.segments)):
             return
         sid = self.segments[r].id
-        if c == 1:
+        if c == 2:
             self.repo.edit_segment(sid, en_text=item.text())
-        elif c == 2:
+        elif c == 3:
             self.repo.edit_segment(sid, vi_text=item.text())
-            st = self.table.item(r, 3)
+            st = self.table.item(r, 4)
             if st:
                 st.setText(STATUS_VI["done"])
-        elif c == 4:
+            self._refresh_full_translation()
+        elif c == 5:
             self.repo.set_flag(sid, item.checkState() == Qt.Checked)
 
     def _highlight_at(self, ms: int) -> None:
@@ -267,14 +289,43 @@ class SessionDetail(QWidget):
         self.retry_btn.setEnabled(False)
 
     def on_translation(self, segment_id: str, res) -> None:
+        if res.extra.get("preview"):
+            return
         for i, s in enumerate(self.segments):
             if s.id == segment_id:
                 self.table.blockSignals(True)
                 if res.text_vi:
-                    self.table.item(i, 2).setText(res.text_vi)
-                self.table.item(i, 3).setText(STATUS_VI.get(res.status.value, res.status.value))
+                    self.table.item(i, 3).setText(res.text_vi)
+                self.table.item(i, 4).setText(STATUS_VI.get(res.status.value, res.status.value))
                 self.table.blockSignals(False)
+                self._refresh_full_translation()
                 break
+
+    def _refresh_full_translation(self) -> None:
+        if not self.session:
+            return
+        lines = []
+        missing = 0
+        for segment in self.repo.list_segments(self.session["id"]):
+            text = segment.vi_text
+            if not text:
+                missing += 1
+                text = f"[Chưa dịch: {language_name(segment.language)}]"
+            speaker = f"Người nói {segment.speaker_id}: " if segment.speaker_id else ""
+            lines.append(f"[{format_ts(segment.start_ms)}] {speaker}{text}")
+        self.full_translation.setPlainText("\n\n".join(lines) or "Chưa có transcript.")
+        self.full_translation_status.setText(
+            f"{len(lines)} đoạn · {missing} đoạn còn thiếu bản dịch" if missing else f"{len(lines)} đoạn · đã dịch xong"
+        )
+
+    def _export_full_translation(self) -> None:
+        if not self.session:
+            return
+        default = str(Path.home() / f"{safe_filename(self.session['title'])}-ban-dich-vi.txt")
+        path, _ = QFileDialog.getSaveFileName(self, "Xuất bản dịch tiếng Việt", default, "*.txt")
+        if path:
+            write_text(path, self.full_translation.toPlainText())
+            QMessageBox.information(self, "Đã xuất", f"Đã lưu {path}")
 
     def _transcribe_file(self) -> None:
         if not self.session:
@@ -325,34 +376,79 @@ class SessionDetail(QWidget):
         self.notes_view.setMarkdown(md)
 
     def _gen_notes(self) -> None:
+        self._generate_summary(automatic=False)
+
+    def generate_summary_after_session(self) -> None:
+        self._generate_summary(automatic=True)
+
+    def _generate_summary(self, automatic: bool) -> None:
         if not self.session:
             return
+        if self._summary_running:
+            return
+        if self.notes_edit.toPlainText().strip():
+            if automatic:
+                self.notes_status.setText("Đã có tóm tắt/ghi chú; giữ nguyên bản hiện tại.")
+                return
+            if QMessageBox.question(
+                    self, "Tạo lại?", "Tóm tắt/ghi chú hiện tại sẽ được thay bằng bản AI mới. Tiếp tục?") != QMessageBox.Yes:
+                return
         provider = self.provider_getter()
         if provider is None:
-            QMessageBox.information(self, "Chưa có API", "Ghi chú AI cần API key (Thiết lập → API).")
+            if automatic:
+                self.notes_status.setText("Chưa tạo tóm tắt: cần API key (Thiết lập → API).")
+            else:
+                QMessageBox.information(self, "Chưa có API", "Tạo tóm tắt AI cần API key (Thiết lập → API).")
+            return
+        if automatic and self.sv.cfg.monthly_budget_usd > 0 \
+                and self.repo.month_cost_usd() >= self.sv.cfg.monthly_budget_usd:
+            self.notes_status.setText("Chưa tạo tóm tắt: đã chạm giới hạn chi phí tháng.")
             return
         segs = self.repo.list_segments(self.session["id"])
         if not segs:
-            QMessageBox.information(self, "Chưa có transcript", "Buổi học chưa có đoạn nào.")
-            return
-        if self.notes_edit.toPlainText().strip() and QMessageBox.question(
-                self, "Tạo lại?", "Ghi chú hiện tại sẽ được thay bằng bản AI mới. Tiếp tục?") != QMessageBox.Yes:
+            if automatic:
+                self.notes_status.setText("Chưa có transcript để tạo tóm tắt.")
+            else:
+                QMessageBox.information(self, "Chưa có transcript", "Buổi học chưa có đoạn nào.")
             return
         sid, title = self.session["id"], self.session["title"]
-        gen = NotesGenerator(provider, cache_dir=data_dir() / "notes_cache")
+
+        def under_budget() -> bool:
+            budget = self.sv.cfg.monthly_budget_usd
+            return budget <= 0 or self.repo.month_cost_usd() < budget
+
+        def record_usage(response) -> None:
+            result = TranslationResult("notes", None, TranslationStatus.DONE, model=response.model,
+                                       input_tokens=response.input_tokens, output_tokens=response.output_tokens,
+                                       elapsed_ms=response.total_ms, first_token_ms=response.ttft_ms)
+            cost = cost_usd(response.input_tokens, response.output_tokens,
+                            self.sv.cfg.price_in_per_mtok, self.sv.cfg.price_out_per_mtok)
+            self.repo.record_request(sid, None, "notes", result, cost)
+
+        gen = NotesGenerator(provider, cache_dir=data_dir() / "notes_cache", budget_check=under_budget,
+                             on_usage=record_usage)
+        self._summary_running = True
         self.gen_btn.setEnabled(False)
-        self.notes_status.setText("Đang tạo ghi chú… (có thể mất 1–2 phút)")
+        self.notes_status.setText("Đang tạo tóm tắt… (bài dài có thể mất một lúc)")
 
         def done(res):
+            self._summary_running = False
             self.gen_btn.setEnabled(True)
-            self.repo.save_notes(sid, res.markdown, res.model, res.segment_ids,
-                                 "complete" if res.complete else "partial")
+            try:
+                self.repo.save_notes(sid, res.markdown, res.model, res.segment_ids,
+                                     "complete" if res.complete else "partial")
+            except Exception as exc:
+                self.notes_status.setText(f"Tóm tắt đã tạo nhưng chưa lưu được: {exc}")
+                return
             if self.session and self.session["id"] == sid:
                 self.notes_edit.setPlainText(res.markdown)
+                if automatic:
+                    self.tabs.setCurrentIndex(2)
                 self.notes_status.setText("Đã tạo." if res.complete else
                                           f"Tạo được một phần ({len(res.failed_chunks)} phần lỗi) — bấm lại để chỉ chạy phần lỗi.")
 
         def fail(msg):
+            self._summary_running = False
             self.gen_btn.setEnabled(True)
             self.notes_status.setText("Lỗi: " + msg)
 

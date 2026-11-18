@@ -28,7 +28,9 @@ QLabel#h1 {{ font-size: 22px; font-weight: 600; }}
 QLabel#muted, QLabel.muted {{ color: {p['muted']}; }}
 QLabel#ts {{ color: {p['muted']}; font-size: 12px; font-family: "Consolas", "Cascadia Mono", monospace; }}
 QLabel#en {{ font-size: {subtitle_px}px; }}
-QLabel#vi {{ font-size: {subtitle_px}px; }}
+QLabel#vi {{ font-size: {subtitle_px + 4}px; font-weight: 600; }}
+QLabel#preview {{ font-size: {subtitle_px + 4}px; font-weight: 600; color: {p['accent']}; }}
+QLabel#original {{ font-size: {max(12, subtitle_px - 3)}px; color: {p['muted']}; }}
 QLabel#partial {{ font-size: {subtitle_px}px; color: {p['partial']}; font-style: italic; }}
 QLabel#pending {{ font-size: {max(12, subtitle_px - 3)}px; color: {p['muted']}; font-style: italic; }}
 QLabel#failed {{ font-size: {max(12, subtitle_px - 3)}px; color: {p['error']}; }}

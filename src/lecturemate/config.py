@@ -58,7 +58,8 @@ class AppConfig:
     asr_model: str = "base"  # tiny | base | small (chốt sau benchmark P1.2.A.1)
     asr_device: str = "auto"  # auto | cpu | cuda
     asr_compute_type: str = "int8"
-    language: str = "en"
+    language: str = "auto"
+    translation_mode: str = "natural"  # "fast" | "natural"
     partial_interval_s: float = 1.0
     max_segment_s: float = 12.0
     silence_to_final_s: float = 0.6
@@ -73,6 +74,7 @@ class AppConfig:
     api_max_retries: int = 2
     api_max_in_flight: int = 2
     api_stream: bool = True
+    auto_summary_on_finish: bool = True
     api_extra_body: dict = field(default_factory=dict)  # vd. tắt suy luận sâu nếu provider hỗ trợ
     max_output_tokens: int = 256
     context_sentences: int = 2
@@ -96,7 +98,11 @@ class AppConfig:
         except (OSError, json.JSONDecodeError):
             return cls()
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in raw.items() if k in known})
+        values = {k: v for k, v in raw.items() if k in known}
+        # Older releases hard-coded English and exposed no language selector.
+        if values.get("language") == "en":
+            values["language"] = "auto"
+        return cls(**values)
 
     def save(self, path: Path | None = None) -> None:
         path = path or config_path()

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
-from ..domain.models import SessionState, TranscriptEvent, TranslationResult, TranslationStatus
+from ..domain.models import SessionState, TranscriptEvent, TranslationResult, TranslationStatus, is_vietnamese
 from .db import connect
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,8 @@ class SegmentRow:
     vi_text: str | None
     translation_status: str
     error_code: str | None
+    language: str = "und"
+    speaker_id: str | None = None
 
 
 class SessionRepository:
@@ -268,16 +270,20 @@ class SessionRepository:
         with self._tx() as c:
             cur = c.execute(
                 """INSERT OR IGNORE INTO segments(id, session_id, sequence_number, start_ms, end_ms,
-                   en_text, status, created_at) VALUES (?,?,?,?,?,?,'final',?)""",
+                   en_text, status, created_at, language, speaker_id) VALUES (?,?,?,?,?,?,'final',?,?,?)""",
                 (event.segment_id, event.session_id, event.sequence_number, event.start_ms,
-                 event.end_ms, text, now_iso()),
+                 event.end_ms, text, now_iso(), event.language, event.speaker_id),
             )
             if cur.rowcount == 0:
                 return False
             status = TranslationStatus.PENDING if translate else TranslationStatus.SKIPPED
+            native = is_vietnamese(event.language)
+            if native:
+                status = TranslationStatus.DONE
             c.execute(
-                "INSERT OR IGNORE INTO translations(segment_id, status, attempts, updated_at) VALUES (?,?,0,?)",
-                (event.segment_id, status.value, now_iso()),
+                """INSERT OR IGNORE INTO translations(segment_id, status, attempts, updated_at, vi_text, model)
+                   VALUES (?,?,0,?,?,?)""",
+                (event.segment_id, status.value, now_iso(), text if native else None, "original-vi" if native else None),
             )
         return True
 
@@ -290,7 +296,8 @@ class SessionRepository:
         )
         return [
             SegmentRow(r["id"], r["session_id"], r["sequence_number"], r["start_ms"], r["end_ms"],
-                       r["en_text"], bool(r["flagged"]), r["vi_text"], r["tstatus"], r["error_code"])
+                       r["en_text"], bool(r["flagged"]), r["vi_text"], r["tstatus"], r["error_code"],
+                       r["language"], r["speaker_id"])
             for r in rows
         ]
 
@@ -304,7 +311,8 @@ class SessionRepository:
             return None
         r = rows[0]
         return SegmentRow(r["id"], r["session_id"], r["sequence_number"], r["start_ms"], r["end_ms"],
-                          r["en_text"], bool(r["flagged"]), r["vi_text"], r["tstatus"], r["error_code"])
+                          r["en_text"], bool(r["flagged"]), r["vi_text"], r["tstatus"], r["error_code"],
+                          r["language"], r["speaker_id"])
 
     def preceding_texts(self, session_id: str, sequence_number: int, n: int) -> list[str]:
         if n <= 0:
@@ -367,7 +375,8 @@ class SessionRepository:
         statuses = ["pending"] + (["failed"] if include_failed else []) + (["skipped"] if include_skipped else [])
         marks = ",".join("?" * len(statuses))
         sql = f"""SELECT g.id FROM segments g JOIN translations t ON t.segment_id = g.id
-                  WHERE t.status IN ({marks})"""
+                  WHERE t.status IN ({marks})
+                  AND NOT (t.status = 'skipped' AND lower(g.language) LIKE 'vi%')"""
         params: list = list(statuses)
         if session_id:
             sql += " AND g.session_id = ?"
@@ -377,7 +386,9 @@ class SessionRepository:
         if include_skipped and ids:
             with self._tx() as c:
                 c.execute(
-                    f"UPDATE translations SET status='pending' WHERE status='skipped' AND segment_id IN ({','.join('?'*len(ids))})",
+                    f"""UPDATE translations SET status='pending' WHERE status='skipped'
+                        AND segment_id IN ({','.join('?'*len(ids))})
+                        AND segment_id IN (SELECT id FROM segments WHERE lower(language) NOT LIKE 'vi%')""",
                     tuple(ids),
                 )
         return [s for s in (self.get_segment(i) for i in ids) if s]

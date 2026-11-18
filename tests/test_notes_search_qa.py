@@ -76,6 +76,20 @@ def test_notes_generator_no_fake_citations_and_partial_retry(repo, tmp_path):
     assert "[00:42:00]" not in r2.markdown and "[mốc?]" in r2.markdown
 
 
+def test_notes_generator_honors_budget_and_reports_usage(repo, tmp_path):
+    sid = seed(repo, texts=LECTURE[:2])
+    provider = MockProvider(lambda _messages: "## Đề mục chính\n- Tóm tắt [00:00:00]")
+    usage = []
+    generator = NotesGenerator(provider, cache_dir=tmp_path / "cache",
+                                budget_check=lambda: False, on_usage=usage.append)
+
+    result = generator.generate(sid, repo.list_segments(sid), "Micro 101")
+
+    assert not provider.calls and not usage
+    assert result.budget_limited and not result.complete
+    assert "giới hạn chi phí" in result.markdown
+
+
 def test_export_markdown_links_valid(repo, tmp_path):
     sid = seed(repo)
     segs = repo.list_segments(sid)
