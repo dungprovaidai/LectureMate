@@ -152,6 +152,7 @@ class LiveSession:
                 partial_interval_s=self.cfg.partial_interval_s,
                 silence_to_final_s=self.cfg.silence_to_final_s,
                 max_segment_s=self.cfg.max_segment_s,
+                on_error=self.sv.cb.on_error,
             )
             self.asr = ASRWorker(aq, self.engine, on_error=self.sv.cb.on_error)
             self.asr.start()

@@ -61,6 +61,7 @@ class StreamingASR:
         use_prompt: bool = True,
         vad: EnergyVAD | None = None,
         clock_ns: Callable[[], int] = time.monotonic_ns,
+        on_error: Callable[[str], None] | None = None,
     ):
         self.tr = transcriber
         self.committer = committer
@@ -73,6 +74,8 @@ class StreamingASR:
         self.use_prompt = use_prompt
         self.vad = vad or EnergyVAD()
         self.clock_ns = clock_ns
+        self.on_error = on_error
+        self._reported_error = False
         self.stats = ASRStats()
         self.allow_partials = True
         self._reset(0)
@@ -165,6 +168,7 @@ class StreamingASR:
         except Exception:
             self.stats.errors += 1
             log.exception("ASR partial lỗi")
+            self._report_error("nhận dạng tạm thời thất bại")
             return
         self.stats.asr_busy_ms += (time.perf_counter() - t0) * 1000
         text = " ".join(s.text for s in segs).strip()
@@ -201,9 +205,10 @@ class StreamingASR:
         t0 = time.perf_counter()
         try:
             segs = self.tr.transcribe(audio, offset_ms, final=True, prompt=prompt)
-        except Exception:
+        except Exception as exc:
             self.stats.errors += 1
             log.exception("ASR final lỗi")
+            self._report_error(f"nhận dạng thất bại: {exc}")
             segs = []
         self.stats.asr_busy_ms += (time.perf_counter() - t0) * 1000
         # loại đoạn Whisper tự tin là không có tiếng nói
@@ -224,6 +229,11 @@ class StreamingASR:
         self.stats.finals += 1
         self.on_event(committed)
         return committed
+
+    def _report_error(self, message: str) -> None:
+        if self.on_error and not self._reported_error:
+            self._reported_error = True
+            self.on_error(f"Lỗi ASR — {message}")
 
     def _cut_long(self) -> None:
         """Câu quá dài không có khoảng lặng: cắt tại khung 30ms năng lượng thấp nhất trong 3s cuối."""

@@ -49,24 +49,50 @@ class FasterWhisperTranscriber:
     def load(self):
         with self._lock:
             if self._model is None:
-                from faster_whisper import WhisperModel
-
-                kw = dict(device=self.device, compute_type=self.compute_type)
-                if self.download_root:
-                    kw["download_root"] = self.download_root
-                if self.cpu_threads:
-                    kw["cpu_threads"] = self.cpu_threads
                 try:
-                    self._model = WhisperModel(self.model_size, **kw)
-                except ValueError:
-                    # compute_type không hỗ trợ trên thiết bị này → để CTranslate2 tự chọn
-                    kw["compute_type"] = "default"
-                    self._model = WhisperModel(self.model_size, **kw)
+                    self._model = self._create_model(self.device)
+                except RuntimeError as exc:
+                    if self.device not in ("auto", "cuda") or not _is_missing_cuda_library(exc):
+                        raise
+                    log.warning("CUDA không khả dụng (%s); chuyển ASR sang CPU", exc)
+                    self.device = "cpu"
+                    self._model = self._create_model("cpu")
             return self._model
+
+    def _create_model(self, device: str):
+        from faster_whisper import WhisperModel
+
+        kw = dict(device=device, compute_type=self.compute_type)
+        if self.download_root:
+            kw["download_root"] = self.download_root
+        if self.cpu_threads:
+            kw["cpu_threads"] = self.cpu_threads
+        try:
+            return WhisperModel(self.model_size, **kw)
+        except ValueError:
+            # compute_type không hỗ trợ trên thiết bị này → để CTranslate2 tự chọn
+            kw["compute_type"] = "default"
+            return WhisperModel(self.model_size, **kw)
 
     def transcribe(self, audio: np.ndarray, offset_ms: int, *, final: bool,
                    prompt: str | None = None) -> list[ASRSegment]:
         model = self.load()
+        try:
+            return self._transcribe_with_model(model, audio, offset_ms, final=final, prompt=prompt)
+        except RuntimeError as exc:
+            if self.device not in ("auto", "cuda") or not _is_missing_cuda_library(exc):
+                raise
+            log.warning("CUDA không khả dụng (%s); chuyển ASR sang CPU và thử lại đoạn âm thanh", exc)
+            with self._lock:
+                # Không thay model lần nữa nếu một luồng khác đã hoàn tất chuyển đổi.
+                if self._model is model:
+                    self.device = "cpu"
+                    self._model = self._create_model("cpu")
+                cpu_model = self._model
+            return self._transcribe_with_model(cpu_model, audio, offset_ms, final=final, prompt=prompt)
+
+    def _transcribe_with_model(self, model, audio: np.ndarray, offset_ms: int, *, final: bool,
+                               prompt: str | None = None) -> list[ASRSegment]:
         segs, _info = model.transcribe(
             audio.astype(np.float32),
             language=self.language,
@@ -83,6 +109,13 @@ class FasterWhisperTranscriber:
             out.append(ASRSegment(offset_ms + int(s.start * 1000), offset_ms + int(s.end * 1000),
                                   s.text.strip(), float(s.no_speech_prob), float(s.avg_logprob)))
         return out
+
+
+def _is_missing_cuda_library(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return any(name in message for name in ("cublas", "cudnn", "cuda")) and any(
+        reason in message for reason in ("not found", "cannot be loaded", "failed to load")
+    )
 
 
 class FakeTranscriber:
