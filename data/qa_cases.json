@@ -1,0 +1,25 @@
+{
+  "_huong_dan": "Thay câu hỏi bằng nội dung bài giảng THẬT của bạn. 20 câu: ~10 'trong_bai' (đáp được), ~5 'mot_phan', ~5 'ngoai_bai' (không có trong bài — đáp án đúng là 'không đủ dữ kiện'). 'expected' là đáp án bạn tự viết để chấm tay.",
+  "cases": [
+    {"id": "Q01", "type": "trong_bai", "question": "Opportunity cost là gì?", "expected": ""},
+    {"id": "Q02", "type": "trong_bai", "question": "Thầy cho ví dụ nào về chi phí cơ hội?", "expected": ""},
+    {"id": "Q03", "type": "trong_bai", "question": "What determines the equilibrium price?", "expected": ""},
+    {"id": "Q04", "type": "trong_bai", "question": "Điều gì xảy ra khi cầu tăng?", "expected": ""},
+    {"id": "Q05", "type": "trong_bai", "question": "Giá trần thấp hơn giá cân bằng gây ra hậu quả gì?", "expected": ""},
+    {"id": "Q06", "type": "trong_bai", "question": "", "expected": ""},
+    {"id": "Q07", "type": "trong_bai", "question": "", "expected": ""},
+    {"id": "Q08", "type": "trong_bai", "question": "", "expected": ""},
+    {"id": "Q09", "type": "trong_bai", "question": "", "expected": ""},
+    {"id": "Q10", "type": "trong_bai", "question": "", "expected": ""},
+    {"id": "Q11", "type": "mot_phan", "question": "So sánh giá trần và giá sàn", "expected": "Bài chỉ nói giá trần"},
+    {"id": "Q12", "type": "mot_phan", "question": "", "expected": ""},
+    {"id": "Q13", "type": "mot_phan", "question": "", "expected": ""},
+    {"id": "Q14", "type": "mot_phan", "question": "", "expected": ""},
+    {"id": "Q15", "type": "mot_phan", "question": "", "expected": ""},
+    {"id": "Q16", "type": "ngoai_bai", "question": "Ai là người đầu tiên đưa ra khái niệm opportunity cost?", "expected": "Không đủ dữ kiện"},
+    {"id": "Q17", "type": "ngoai_bai", "question": "Quang hợp diễn ra như thế nào?", "expected": "Không đủ dữ kiện"},
+    {"id": "Q18", "type": "ngoai_bai", "question": "Lãi suất của Fed năm nay là bao nhiêu?", "expected": "Không đủ dữ kiện"},
+    {"id": "Q19", "type": "ngoai_bai", "question": "", "expected": "Không đủ dữ kiện"},
+    {"id": "Q20", "type": "ngoai_bai", "question": "", "expected": "Không đủ dữ kiện"}
+  ]
+}

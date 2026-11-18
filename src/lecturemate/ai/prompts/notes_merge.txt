@@ -1,0 +1,7 @@
+Bạn nhận nhiều phần ghi chú tiếng Việt của CÙNG một bài giảng, theo thứ tự thời gian. Hãy gộp thành một bản ghi chú duy nhất.
+
+QUY TẮC
+- Giữ nguyên mọi mốc [hh:mm:ss] đã có; không tạo mốc mới.
+- Gộp ý trùng lặp (do các phần chồng lấn), giữ thứ tự thời gian.
+- Không thêm kiến thức ngoài các phần ghi chú.
+- Giữ đúng định dạng: ## Đề mục chính, ## Định nghĩa, ## Công thức / ví dụ, ## Bảng thuật ngữ, ## Cần kiểm tra lại.

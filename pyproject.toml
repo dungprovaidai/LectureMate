@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lecturemate"
+version = "0.1.0"
+description = "Phụ đề song ngữ Anh–Việt gần thời gian thực cho bài giảng tiếng Anh (Windows)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary / personal use" }
+dependencies = [
+    "PySide6>=6.6,<7",
+    "numpy>=1.26",
+    "httpx>=0.27",
+    "keyring>=24",
+]
+
+[project.optional-dependencies]
+# Thu âm thật (WASAPI loopback / micro). Không bắt buộc để chạy test.
+audio = ["soundcard>=0.4.3"]
+# Nhận dạng giọng nói thật. Không bắt buộc để chạy test (đã có FakeTranscriber).
+asr = ["faster-whisper>=1.0"]
+dev = ["pytest>=8", "pytest-qt>=4.4", "pyinstaller>=6.5"]
+all = ["soundcard>=0.4.3", "faster-whisper>=1.0"]
+
+[project.scripts]
+lecturemate = "lecturemate.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lecturemate = ["persistence/migrations/*.sql", "ai/prompts/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+qt_api = "pyside6"
+markers = [
+    "slow: kiểm thử chạy lâu (stress)",
+]

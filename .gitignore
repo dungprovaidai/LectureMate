@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.egg-info/
+build/
+dist/
+LectureMate-build/
+.pytest_cache/
+# kết quả đo / dữ liệu cá nhân
+*.wav
+asr_report.csv
+asr_*.txt
+api_probe.json
+translation_results.csv
+benchmark_e2e.md
+stress_samples.csv
+qa_eval.csv
+devices_report.json
+*.report.json
+models/
+
+.venv-build/
