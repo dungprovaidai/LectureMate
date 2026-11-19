@@ -21,6 +21,7 @@ from typing import Callable
 import numpy as np
 
 from ..audio.audio_worker import END, FLUSH, AudioFrame
+from ..audio.mic_input import MicFilter, boost_quiet_speech
 from ..domain.models import TranscriptEvent
 from .segment_committer import SegmentCommitter
 from .speaker import SpeakerTracker
@@ -64,6 +65,7 @@ class StreamingASR:
         clock_ns: Callable[[], int] = time.monotonic_ns,
         on_error: Callable[[str], None] | None = None,
         speaker_tracker: SpeakerTracker | None = None,
+        mic_assist: bool = False,
     ):
         self.tr = transcriber
         self.committer = committer
@@ -74,7 +76,8 @@ class StreamingASR:
         self.min_speech = int(min_speech_s * SR)
         self.preroll = int(preroll_s * SR)
         self.use_prompt = use_prompt
-        self.vad = vad or EnergyVAD()
+        self._mic_filter = MicFilter() if mic_assist else None
+        self.vad = vad or (EnergyVAD(min_db=-64.0, margin_db=8.0, floor_init_db=None) if mic_assist else EnergyVAD())
         self.clock_ns = clock_ns
         self.on_error = on_error
         self._reported_error = False
@@ -84,6 +87,7 @@ class StreamingASR:
         self._reset(0)
         self._rem = np.zeros(0, np.float32)
         self._rem_start = 0
+        self._next_sample: int | None = None
 
     # ---------------------------------------------------------------- state
     def _reset(self, start_sample: int) -> None:
@@ -106,6 +110,12 @@ class StreamingASR:
     # ----------------------------------------------------------------- feed
     def feed(self, frame: AudioFrame) -> None:
         x = frame.samples
+        if self._mic_filter is not None:
+            # Không ghép lịch sử lọc qua phần audio bị rớt khi ASR quá tải.
+            if self._next_sample is not None and frame.start_sample != self._next_sample:
+                self.flush()
+            self._next_sample = frame.start_sample + len(x)
+            x = self._mic_filter.process(x)
         self.stats.audio_ms += len(x) * 1000 // SR
         # ghép phần dư < 30ms của lần trước để VAD luôn chạy trên khung 30ms đầy đủ
         if self._rem.size:
@@ -163,9 +173,13 @@ class StreamingASR:
 
     # ------------------------------------------------------------- emitters
     def _partial(self) -> None:
+        if self._mic_filter is not None and self.speech_samples < self.min_speech:
+            return
         audio = self._audio()
         if len(audio) < self.min_speech:
             return
+        if self._mic_filter is not None:
+            audio = boost_quiet_speech(audio)
         t0 = time.perf_counter()
         try:
             segs = self.tr.transcribe(audio, self.buf_start * 1000 // SR, final=False)
@@ -208,6 +222,8 @@ class StreamingASR:
         return result
 
     def _transcribe_final(self, audio: np.ndarray, start_sample: int, speech_ratio: float) -> TranscriptEvent | None:
+        if self._mic_filter is not None:
+            audio = boost_quiet_speech(audio)
         seg_id, boundary_ns = self.seg_id, self.last_speech_ns
         offset_ms = start_sample * 1000 // SR
         prompt = self.committer.prev_text[-200:] if (self.use_prompt and self.committer.prev_text) else None
@@ -274,6 +290,9 @@ class StreamingASR:
             self.speech_samples = len(tail)
 
     def flush(self) -> TranscriptEvent | None:
+        if self._mic_filter is not None:
+            self._mic_filter.reset()
+            self._next_sample = None
         if self._rem.size:
             self.buf.append(self._rem)
             self.buf_len += len(self._rem)

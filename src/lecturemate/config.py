@@ -53,6 +53,7 @@ class AppConfig:
     source_type: str = "microphone"  # "microphone" | "loopback"
     device_id: str = ""  # rỗng = thiết bị mặc định
     save_audio: bool = True
+    mic_assist: bool = True  # chỉ xử lý đường phiên âm khi nguồn là micro
 
     # --- ASR ---
     asr_model: str = "base"  # tiny | base | small (chốt sau benchmark P1.2.A.1)

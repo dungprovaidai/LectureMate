@@ -4,7 +4,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-import time
 from collections import deque
 from datetime import datetime
 
@@ -18,7 +17,9 @@ from .. import __version__
 from ..ai import secrets
 from ..ai.agnes_adapter import AgnesAdapter
 from ..app_controller import AppServices, LiveSession, ensure_course
-from ..audio.sources import FileAudioSource, SoundCardSource, list_devices
+from ..audio import SAMPLE_RATE
+from ..audio.audio_worker import rms_dbfs
+from ..audio.sources import EndOfStream, FileAudioSource, SoundCardSource, list_devices
 from ..config import AppConfig, audio_dir
 from ..domain.models import SessionState, TranscriptEvent, TranslationResult, TranslationStatus, format_ts
 from ..metrics import percentile
@@ -133,7 +134,7 @@ class LivePage(QWidget):
         self.device.setAccessibleName("Thiết bị")
         self.device.setMinimumWidth(180)
         self.test_btn = QPushButton("Thử 5 giây")
-        self.test_btn.setToolTip("Ghi thử 5 giây để kiểm tra mức âm")
+        self.test_btn.setToolTip("Đo mức âm đầu vào trong 5 giây, không lưu bản ghi")
         for w in (brand, self.title, self.course, self.source, self.device, self.test_btn):
             tl.addWidget(w, 1 if w is self.title else 0)
         lay.addWidget(top)
@@ -209,6 +210,7 @@ class MainWindow(QMainWindow):
         self.source_factory = source_factory or self._default_source
         self.sv = AppServices(cfg, repo, self.provider_getter, self.bridge.callbacks())
         self.live: LiveSession | None = None
+        self._testing_device = False
         self._recent_totals: deque[int] = deque(maxlen=200)
         self._pending_translations: dict[str, TranslationResult] = {}
 
@@ -333,6 +335,8 @@ class MainWindow(QMainWindow):
         self.page.find_edit.selectAll()
 
     def start_session(self) -> None:
+        if not self.page.start_btn.isEnabled():
+            return
         if self.live and self.live.state not in (SessionState.COMPLETED, SessionState.IDLE, SessionState.ERROR):
             return
         p = self.page
@@ -354,8 +358,7 @@ class MainWindow(QMainWindow):
         p.p50.setText("Trễ p50: —")
         src = self.source_factory(self.cfg.source_type, self.cfg.device_id)
         self.live = LiveSession(self.sv, src, transcriber, audio_dir())
-        p.start_btn.setEnabled(False)
-        p.start_btn.setText("Đang mở thiết bị…")
+        self._update_controls(SessionState.CHECKING_DEVICE)
         live = self.live
         title = p.title.text().strip() or "Buổi học"
 
@@ -431,41 +434,66 @@ class MainWindow(QMainWindow):
 
     def _test_device(self) -> None:
         p = self.page
-        if self.live and self.live.state in (SessionState.RECORDING, SessionState.PAUSED):
+        if not p.test_btn.isEnabled():
             return
-        src = self.source_factory(p.source.currentData(), p.device.currentData() or "")
-        p.test_btn.setEnabled(False)
-        p.test_btn.setText("Đang thử…")
-        from ..audio.audio_worker import rms_dbfs
+        kind = p.source.currentData()
+        source = self.source_factory(kind, p.device.currentData() or "")
+        quiet_blocks = 10 if kind == "microphone" else 0  # 1 giây đo nền cho micro
+        state = self.live.state if self.live else SessionState.IDLE
+        self._testing_device = True
+        self._update_controls(state)
+        p.banner.show_message("Giữ im lặng 1 giây để đo tiếng nền…" if quiet_blocks else
+                              "Hãy phát video hoặc bài giảng để thử âm thanh máy…", "info")
 
         def job(progress):
-            peaks = []
-            src.open()
+            levels = []
             try:
-                t0 = time.monotonic()
-                while time.monotonic() - t0 < 5:
-                    x = src.read(1600)
-                    db = rms_dbfs(x)
-                    peaks.append(db)
+                source.open()
+                for i in range(50):
+                    if quiet_blocks and i == quiet_blocks:
+                        progress(i / 50)
+                    db = rms_dbfs(source.read(SAMPLE_RATE // 10))
+                    levels.append(db)
                     self.bridge.level.emit(db)
+            except EndOfStream:
+                pass
             finally:
-                src.close()
-            return max(peaks) if peaks else -120
+                source.close()
+            return levels
 
-        def done(peak):
-            p.test_btn.setEnabled(True)
-            p.test_btn.setText("Thử 5 giây")
-            if peak < -55:
-                p.banner.show_message(f"Không nghe thấy tín hiệu (đỉnh {peak:.0f} dBFS). Kiểm tra thiết bị/âm lượng.")
+        def reset_controls():
+            self._testing_device = False
+            self._update_controls(state)
+
+        def done(levels):
+            reset_controls()
+            # Bỏ qua đỉnh đơn lẻ (ví dụ gõ bàn) và so với mức nền đã đo.
+            signal = percentile(levels[quiet_blocks:], 90)
+            floor = percentile(levels[:quiet_blocks], 50)
+            if signal is None:
+                p.banner.show_message("Mẫu thử quá ngắn. Thử lại với thiết bị đang dùng.")
+            elif quiet_blocks and signal < -72:
+                p.banner.show_message("Gần như không có tín hiệu mic. Chọn Microphone Array (không chọn Stereo Mix), "
+                                      "kiểm tra quyền truy cập và mức Đầu vào trong Âm thanh của Windows.")
+            elif floor is not None and signal - floor < 7:
+                p.banner.show_message("Chưa thấy lời nói nổi hơn mức nền. Thử lại: im lúc đầu, rồi nói khi có nhắc; "
+                                      "đưa mic gần hơn hoặc giảm tiếng quạt và tiếng nền.")
+            elif quiet_blocks and signal < -42:
+                tip = ("Hỗ trợ mic yếu đang bật." if self.cfg.mic_assist else
+                       "Có thể bật Hỗ trợ mic yếu trong Thiết lập → Âm thanh & ASR.")
+                p.banner.show_message(f"Có tín hiệu nhưng mức thu thấp ({signal:.0f} dBFS). {tip} "
+                                      "Đưa mic gần hơn để thu rõ hơn.", "info")
+            elif not quiet_blocks and signal < -55:
+                p.banner.show_message("Chưa thấy tín hiệu âm thanh máy. Kiểm tra loa đầu ra và phát lại video để thử.")
             else:
-                p.banner.show_message(f"Thiết bị hoạt động — mức đỉnh {peak:.0f} dBFS.", "info", 6000)
+                p.banner.show_message(f"Mức thu đã đo: {signal:.0f} dBFS. Bạn có thể bắt đầu ghi.", "info", 6000)
 
         def fail(msg):
-            p.test_btn.setEnabled(True)
-            p.test_btn.setText("Thử 5 giây")
+            reset_controls()
             p.banner.show_message("Không mở được thiết bị: " + msg)
 
-        run_async(job, done, fail)
+        run_async(job, done, fail, on_progress=lambda _: p.banner.show_message(
+            "Bây giờ nói một câu ở khoảng cách bạn thường dùng…", "info"))
 
     # ------------------------------------------------------------- events
     def _on_transcript(self, ev: TranscriptEvent) -> None:
@@ -506,17 +534,18 @@ class MainWindow(QMainWindow):
     def _update_controls(self, st: SessionState) -> None:
         p = self.page
         rec = st in (SessionState.RECORDING, SessionState.PAUSED)
-        busy = st in (SessionState.CHECKING_DEVICE, SessionState.STOPPING)
+        busy = self._testing_device or st in (SessionState.CHECKING_DEVICE, SessionState.STOPPING)
         p.start_btn.setEnabled(not rec and not busy)
         p.start_btn.setText("Đang mở thiết bị…" if st == SessionState.CHECKING_DEVICE else "● Bắt đầu  (Ctrl+R)")
         p.pause_btn.setEnabled(rec)
         p.pause_btn.setText("▶ Tiếp tục  (Ctrl+P)" if st == SessionState.PAUSED else "⏸ Tạm dừng  (Ctrl+P)")
         p.stop_btn.setEnabled(rec)
+        p.test_btn.setText("Đang thử…" if self._testing_device else "Thử 5 giây")
         for w in (p.source, p.device, p.test_btn, p.course, p.title):
             w.setEnabled(not rec and not busy)
         p.rec_lbl.setText({SessionState.RECORDING: "● ĐANG GHI", SessionState.PAUSED: "❚❚ TẠM DỪNG",
                            SessionState.STOPPING: "Đang lưu…"}.get(st, ""))
-        self.nav_set.setEnabled(not rec)
+        self.nav_set.setEnabled(not rec and not busy)
 
     def _tick(self) -> None:
         if self.live:

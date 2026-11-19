@@ -6,18 +6,18 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QProgressBar, QPushBu
 
 
 class LevelMeter(QProgressBar):
-    """Thanh mức âm: -60 dBFS → 0 dBFS, có giữ đỉnh nhẹ. Kèm chữ để không chỉ dựa vào màu."""
+    """Mức âm đầu vào: -80 dBFS → 0 dBFS, có giữ đỉnh nhẹ."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setRange(0, 60)
+        self.setRange(0, 80)
         self.setTextVisible(False)
         self.setFixedWidth(140)
         self.setAccessibleName("Mức âm thanh")
         self._val = 0.0
 
     def set_db(self, db: float) -> None:
-        v = max(0.0, min(60.0, db + 60.0))
+        v = max(0.0, min(80.0, db + 80.0))
         self._val = max(v, self._val * 0.8)  # nhả chậm
         self.setValue(int(self._val))
         self.setToolTip(f"{db:.0f} dBFS")
@@ -43,6 +43,7 @@ class ErrorBanner(QFrame):
         self.hide()
 
     def show_message(self, msg: str, kind: str = "error", timeout_ms: int = 0) -> None:
+        self._timer.stop()
         self.setObjectName("banner_err" if kind == "error" else "banner_info")
         self.icon.setText("⚠" if kind == "error" else "ℹ")
         self.text.setText(msg)

@@ -147,6 +147,19 @@ def test_start_pause_stop_ui_responsive(qtbot, window, repo):
     assert p.start_btn.isEnabled()
 
 
+@pytest.mark.parametrize("pattern,message", [
+    ([(1.0, 0.0), (4.0, 0.0025)], "Có tín hiệu nhưng mức thu thấp"),
+    ([(5.0, 0.003)], "Chưa thấy lời nói nổi hơn mức nền"),
+])
+def test_mic_check_distinguishes_weak_input_from_background(qtbot, window, repo, pattern, message):
+    window.source_factory = lambda kind, device: FakeAudioSource(pattern)
+    window._test_device()
+    assert not window.page.start_btn.isEnabled()
+    qtbot.waitUntil(lambda: window.page.test_btn.isEnabled())
+    assert message in window.page.banner.text.text()
+    assert window.page.start_btn.isEnabled() and repo.list_sessions() == []
+
+
 def test_library_lists_and_deletes(qtbot, window, repo, monkeypatch):
     from lecturemate.ui import session_library as sl
 
@@ -200,6 +213,9 @@ def test_settings_dialog_opens(qtbot, window, repo):
     d.theme.setCurrentIndex(1)
     d.translation_mode.setCurrentIndex(d.translation_mode.findData("fast"))
     d.auto_summary.setChecked(True)
+    assert d.mic_assist.isChecked()
+    d.mic_assist.setChecked(False)
     d._accept()
     assert window.cfg.theme == "light"
     assert window.cfg.translation_mode == "fast" and window.cfg.auto_summary_on_finish
+    assert not window.cfg.mic_assist

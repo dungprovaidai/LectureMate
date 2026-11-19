@@ -1,6 +1,7 @@
 """End-to-end offline: FakeAudioSource (thời gian thực tăng tốc) + FakeTranscriber + MockProvider."""
 import threading
 import time
+import wave
 
 import numpy as np
 import pytest
@@ -9,6 +10,7 @@ from lecturemate.ai.llm_provider import LLMError, MockProvider
 from lecturemate.app_controller import AppServices, Callbacks, LiveSession, transcribe_file_job
 from lecturemate.asr.transcriber import FakeTranscriber
 from lecturemate.audio.sources import FakeAudioSource
+from lecturemate.audio.wav_writer import float_to_pcm16
 from lecturemate.config import AppConfig
 from lecturemate.domain.models import SessionState
 from lecturemate.persistence.repository import SessionRepository
@@ -167,6 +169,37 @@ def test_record_only_then_transcribe_after(tmp_path):
     assert len(repo.list_segments(sid)) == 12
     assert wait(lambda: all(s.translation_status == "done" for s in repo.list_segments(sid)))
     sv.shutdown()
+
+
+@pytest.mark.parametrize("asr_mode,source,assist,expected", [
+    ("realtime", "microphone", True, ["quiet voice"]),
+    ("record_only", "microphone", True, ["quiet voice"]),
+    ("realtime", "loopback", True, []),
+    ("realtime", "microphone", False, []),
+])
+def test_weak_mic_assist_live_and_from_raw_wav(tmp_path, asr_mode, source, assist, expected):
+    pattern = [(0.6, 0), (1.4, 0.0025), (0.8, 0)]  # ~ -55 dBFS khi nói
+    words = [(680, 1100, "quiet"), (1240, 1620, "voice")]
+    sv, repo, _ = services(tmp_path, None, asr_mode=asr_mode, source_type=source,
+                           mic_assist=assist, translation_enabled=False)
+    audio = SpeedSource(pattern, speed=20)
+    tr = FakeTranscriber(words)
+    live = LiveSession(sv, audio, tr, tmp_path / "audio")
+    try:
+        sid = live.start("Mic nhỏ")
+        assert wait(lambda: live.state == SessionState.COMPLETED)
+        if asr_mode == "record_only":
+            assert repo.list_segments(sid) == []
+            sv.cfg.source_type = "loopback"  # dùng nguồn của buổi đã lưu, không phải lựa chọn hiện tại
+            transcribe_file_job(sv, sid, tr)
+        assert [s.en_text for s in repo.list_segments(sid)] == expected
+        with wave.open(repo.get_session(sid)["audio_path"], "rb") as wav:
+            assert wav.getframerate() == 16_000
+            assert wav.readframes(wav.getnframes()) == float_to_pcm16(audio._x)
+    finally:
+        live.stop()
+        sv.shutdown()
+        repo.close()
 
 
 def test_crash_recovery(tmp_path):

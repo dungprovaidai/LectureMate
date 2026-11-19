@@ -163,6 +163,7 @@ class LiveSession:
                 max_segment_s=max_segment_s,
                 use_prompt=False,
                 on_error=self.sv.cb.on_error,
+                mic_assist=self.cfg.mic_assist and self.cfg.source_type == "microphone",
             )
             self.asr = ASRWorker(aq, self.engine, on_error=self.sv.cb.on_error)
             self.asr.start()
@@ -297,7 +298,8 @@ def transcribe_file_job(services: AppServices, session_id: str, transcriber: Tra
     eng = StreamingASR(transcriber, committer, ev_cb, partial_interval_s=1e9,
                        silence_to_final_s=services.cfg.silence_to_final_s,
                        max_segment_s=services.cfg.max_segment_s, use_prompt=False,
-                       on_error=services.cb.on_error)
+                       on_error=services.cb.on_error,
+                       mic_assist=services.cfg.mic_assist and s["source_type"] == "microphone")
     eng.allow_partials = False
     src = FileAudioSource(s["audio_path"])
     src.open()

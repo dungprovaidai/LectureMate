@@ -8,7 +8,7 @@ FRAME = 480  # 30 ms @ 16 kHz
 
 
 class EnergyVAD:
-    def __init__(self, margin_db: float = 9.0, min_db: float = -48.0, floor_init_db: float = -60.0,
+    def __init__(self, margin_db: float = 9.0, min_db: float = -48.0, floor_init_db: float | None = -60.0,
                  rise: float = 0.02, fall: float = 0.3):
         self.margin = margin_db
         self.min_db = min_db
@@ -19,6 +19,10 @@ class EnergyVAD:
     def is_speech(self, frame: np.ndarray) -> bool:
         r = float(np.sqrt(np.mean(np.square(frame, dtype=np.float64)))) if frame.size else 0.0
         db = 20 * np.log10(max(r, 1e-6))
+        if self.noise_db is None:
+            # Với mic yếu, lấy mức đầu tiên làm mốc ước lượng nền. Chừa 3 dB cho
+            # câu nói bắt đầu ngay, và không để tín hiệu to lúc mở mic nâng ngưỡng quá cao.
+            self.noise_db = min(-57.0, db - 3.0)
         speech = db > max(self.min_db, self.noise_db + self.margin)
         a = self.rise if db > self.noise_db else self.fall
         if not speech or db < self.noise_db:
