@@ -171,6 +171,21 @@ def test_record_only_then_transcribe_after(tmp_path):
     sv.shutdown()
 
 
+@pytest.mark.parametrize("translation_mode", ["natural", "fast"])
+def test_live_recognition_updates_quickly_independent_of_translation_mode(tmp_path, translation_mode):
+    sv, repo, _ = services(tmp_path, None, partial_interval_s=1.0, translation_mode=translation_mode,
+                           translation_enabled=False)
+    live = LiveSession(sv, SpeedSource([(1.2, 0.3)]), FakeTranscriber([(100, 500, "hello")]), tmp_path / "audio")
+    try:
+        live.start("Live ASR")
+        assert live.engine.partial_interval == 0.5
+        assert wait(lambda: live.state == SessionState.COMPLETED)
+    finally:
+        live.stop()
+        sv.shutdown()
+        repo.close()
+
+
 @pytest.mark.parametrize("asr_mode,source,assist,expected", [
     ("realtime", "microphone", True, ["quiet voice"]),
     ("record_only", "microphone", True, ["quiet voice"]),

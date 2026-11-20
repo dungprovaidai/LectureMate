@@ -69,6 +69,46 @@ def test_device_loss_reports_error_and_finalizes_wav(tmp_path):
     assert rate == 16000 and len(x) == 16000
 
 
+def test_pause_waits_for_inflight_frame_before_sending_flush(tmp_path):
+    writing, release, attempted, paused = (threading.Event() for _ in range(4))
+
+    class SlowWriter(WavWriter):
+        def write(self, samples):
+            writing.set()
+            assert release.wait(3)
+            super().write(samples)
+
+    frames = queue.Queue()
+    worker = AudioCaptureWorker(FakeAudioSource([(2.0, 0.3)], realtime=True), frames,
+                                SlowWriter(tmp_path / "pause-boundary.wav"))
+
+    def pause():
+        attempted.set()
+        worker.pause()
+        paused.set()
+
+    pauser = threading.Thread(target=pause)
+    worker.start()
+    try:
+        assert writing.wait(2)
+        pauser.start()
+        assert attempted.wait(2)
+        assert not paused.wait(0.1)
+        release.set()
+        assert paused.wait(2)
+        elapsed = worker.elapsed_ms
+        worker.stop()
+        assert worker.elapsed_ms == elapsed
+        items = list(frames.queue)
+        flush = items.index(FLUSH)
+        assert not any(isinstance(item, AudioFrame) for item in items[flush + 1:])
+    finally:
+        release.set()
+        worker.stop()
+        if pauser.ident is not None:
+            pauser.join(2)
+
+
 def test_full_queue_drops_oldest_but_wav_complete(tmp_path):
     src = FakeAudioSource([(2.0, 0.3)])
     q = queue.Queue(maxsize=3)

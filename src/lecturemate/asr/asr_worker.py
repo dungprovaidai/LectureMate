@@ -321,7 +321,7 @@ def _segment_language(segments) -> tuple[str, float]:
 class ASRWorker(threading.Thread):
     """Thread tiêu thụ hàng đợi AudioFrame từ AudioCaptureWorker."""
 
-    def __init__(self, in_queue: "queue.Queue", engine: StreamingASR, max_lag_s: float = 2.0,
+    def __init__(self, in_queue: "queue.Queue", engine: StreamingASR, max_lag_s: float = 0.0,
                  on_done: Callable[[], None] | None = None, on_error: Callable[[str], None] | None = None):
         super().__init__(name="ASRWorker", daemon=True)
         self.q = in_queue
@@ -357,6 +357,7 @@ class ASRWorker(threading.Thread):
                 if item is FLUSH:
                     self.engine.flush()
                     continue
+                # Catch up on audio before decoding another preview of old input.
                 lagging = self.q.qsize() > self.max_lag_frames
                 self.engine.allow_partials = not lagging
                 if lagging:

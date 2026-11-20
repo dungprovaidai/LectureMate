@@ -148,12 +148,11 @@ class LiveSession:
         if not self.record_only:
             aq = queue.Queue(maxsize=300)  # ~30 giây audio
             committer = SegmentCommitter(self.repo, sid, translate=translate)
+            partial_interval_s = min(self.cfg.partial_interval_s, 0.5)
             if self.cfg.translation_mode == "fast":
-                partial_interval_s = min(self.cfg.partial_interval_s, 0.5)
                 silence_to_final_s = min(self.cfg.silence_to_final_s, 0.4)
                 max_segment_s = min(self.cfg.max_segment_s, 8.0)
             else:
-                partial_interval_s = self.cfg.partial_interval_s
                 silence_to_final_s = self.cfg.silence_to_final_s
                 max_segment_s = self.cfg.max_segment_s
             self.engine = StreamingASR(

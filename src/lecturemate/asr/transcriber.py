@@ -47,6 +47,7 @@ class FasterWhisperTranscriber:
         self.name = f"faster-whisper:{model_size}"
         self._model = None
         self._lock = threading.Lock()
+        self._encode_state = threading.local()
 
     def load(self):
         with self._lock:
@@ -64,17 +65,33 @@ class FasterWhisperTranscriber:
     def _create_model(self, device: str):
         from faster_whisper import WhisperModel
 
+        class SharedEncoderWhisperModel(WhisperModel):
+            def encode(model, features):
+                state = getattr(self._encode_state, "value", None)
+                if state is None:
+                    return super().encode(features)
+                if state["content_frames"] < features.shape[-1]:
+                    features = features.copy()
+                    # Detection includes one extra mel frame; use the decoder's padding.
+                    features[..., state["content_frames"]:] = 0
+                previous = state.get("features")
+                if previous is not None and np.array_equal(previous, features):
+                    return state["encoded"]
+                encoded = super().encode(features)
+                state.update(features=features.copy(), encoded=encoded)
+                return encoded
+
         kw = dict(device=device, compute_type=self.compute_type)
         if self.download_root:
             kw["download_root"] = self.download_root
         if self.cpu_threads:
             kw["cpu_threads"] = self.cpu_threads
         try:
-            return WhisperModel(self.model_size, **kw)
+            return SharedEncoderWhisperModel(self.model_size, **kw)
         except ValueError:
             # compute_type không hỗ trợ trên thiết bị này → để CTranslate2 tự chọn
             kw["compute_type"] = "default"
-            return WhisperModel(self.model_size, **kw)
+            return SharedEncoderWhisperModel(self.model_size, **kw)
 
     def transcribe(self, audio: np.ndarray, offset_ms: int, *, final: bool,
                    prompt: str | None = None) -> list[ASRSegment]:
@@ -95,25 +112,30 @@ class FasterWhisperTranscriber:
 
     def _transcribe_with_model(self, model, audio: np.ndarray, offset_ms: int, *, final: bool,
                                prompt: str | None = None) -> list[ASRSegment]:
-        segs, info = model.transcribe(
-            audio.astype(np.float32),
-            language=self.language,
-            beam_size=self.final_beam if final else 1,
-            best_of=1,
-            temperature=0.0,
-            condition_on_previous_text=False,
-            initial_prompt=prompt if final else None,
-            without_timestamps=not final,
-            vad_filter=False,
-        )
-        detected_language = getattr(info, "language", None) or self.language or "und"
-        language_probability = float(getattr(info, "language_probability", 0.0) or 0.0)
-        out = []
-        for s in segs:
-            out.append(ASRSegment(offset_ms + int(s.start * 1000), offset_ms + int(s.end * 1000),
-                                  s.text.strip(), float(s.no_speech_prob), float(s.avg_logprob),
-                                  detected_language, language_probability))
-        return out
+        # Share an encoder result between language detection and decoding in this call only.
+        self._encode_state.value = {"content_frames": len(audio) // 160}
+        try:
+            segs, info = model.transcribe(
+                audio.astype(np.float32),
+                language=self.language,
+                beam_size=self.final_beam if final else 1,
+                best_of=1,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                initial_prompt=prompt if final else None,
+                without_timestamps=not final,
+                vad_filter=False,
+            )
+            detected_language = getattr(info, "language", None) or self.language or "und"
+            language_probability = float(getattr(info, "language_probability", 0.0) or 0.0)
+            out = []
+            for s in segs:
+                out.append(ASRSegment(offset_ms + int(s.start * 1000), offset_ms + int(s.end * 1000),
+                                      s.text.strip(), float(s.no_speech_prob), float(s.avg_logprob),
+                                      detected_language, language_probability))
+            return out
+        finally:
+            self._encode_state.value = None
 
 
 def _is_missing_cuda_library(exc: RuntimeError) -> bool:

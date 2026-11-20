@@ -92,6 +92,7 @@ class AudioCaptureWorker(threading.Thread):
         self.on_end = on_end
         self._stop_evt = threading.Event()
         self._paused = threading.Event()
+        self._frame_lock = threading.RLock()
         self.opened = threading.Event()
         self.open_error: str | None = None
         self.samples_kept = 0
@@ -101,12 +102,15 @@ class AudioCaptureWorker(threading.Thread):
 
     # ----------------------------------------------------------- control
     def pause(self) -> None:
-        if not self._paused.is_set():
-            self._paused.set()
-            self._put(FLUSH)
+        # Publish FLUSH only after the current frame has reached WAV and ASR.
+        with self._frame_lock:
+            if not self._paused.is_set():
+                self._paused.set()
+                self._put(FLUSH)
 
     def resume(self) -> None:
-        self._paused.clear()
+        with self._frame_lock:
+            self._paused.clear()
 
     @property
     def paused(self) -> bool:
@@ -166,20 +170,21 @@ class AudioCaptureWorker(threading.Thread):
                 now = time.monotonic_ns()
                 if self.on_level:
                     self.on_level(rms_dbfs(x))
-                if self._paused.is_set():
-                    continue  # vẫn đọc để không tràn buffer thiết bị, nhưng bỏ dữ liệu
-                self.ring.push(x)
-                start = self.samples_kept
-                if self.wav:
-                    try:
-                        self.wav.write(x)
-                    except OSError as exc:  # hết dung lượng...
-                        log.error("Không ghi được WAV: %s", exc)
-                        if self.on_error:
-                            self.on_error(f"Không ghi được file âm thanh: {exc}")
-                        self.wav = None
-                self.samples_kept += len(x)
-                self._put(AudioFrame(x, start, now))
+                with self._frame_lock:
+                    if self._paused.is_set():
+                        continue  # vẫn đọc để không tràn buffer thiết bị, nhưng bỏ dữ liệu
+                    self.ring.push(x)
+                    start = self.samples_kept
+                    if self.wav:
+                        try:
+                            self.wav.write(x)
+                        except OSError as exc:  # hết dung lượng...
+                            log.error("Không ghi được WAV: %s", exc)
+                            if self.on_error:
+                                self.on_error(f"Không ghi được file âm thanh: {exc}")
+                            self.wav = None
+                    self.samples_kept += len(x)
+                    self._put(AudioFrame(x, start, now))
         except Exception as exc:  # không để thread chết im lặng
             log.exception("AudioCaptureWorker lỗi")
             if self.on_error:
